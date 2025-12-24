@@ -5,11 +5,25 @@
  * All other code should use ensureWasmInitialized() instead of calling initLinera() directly.
  */
 
-import { initialize as initLinera } from '@linera/client';
-
+// Use dynamic import to avoid module resolution issues in production
 // Module-level state for singleton pattern
 let initPromise: Promise<void> | null = null;
 let initialized = false;
+let lineraModule: typeof import('@linera/client') | null = null;
+
+/**
+ * Dynamically load the @linera/client module
+ */
+async function getLineraModule() {
+  if (lineraModule) return lineraModule;
+  try {
+    lineraModule = await import('@linera/client');
+    return lineraModule;
+  } catch (error) {
+    console.error('❌ Failed to load @linera/client module:', error);
+    throw error;
+  }
+}
 
 /**
  * Ensures Linera WASM modules are initialized.
@@ -32,7 +46,8 @@ export async function ensureWasmInitialized(): Promise<void> {
   initPromise = (async () => {
     try {
       console.log('🔄 Initializing Linera WASM modules...');
-      await initLinera();
+      const linera = await getLineraModule();
+      await linera.initialize();
       initialized = true;
       console.log('✅ Linera WASM modules initialized successfully');
     } catch (error) {

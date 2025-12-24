@@ -17,7 +17,7 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Resource-Policy': 'cross-origin',
     },
-    port: 3000,
+    port: 3006,
   },
   preview: {
     headers: {
@@ -28,6 +28,9 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ['@linera/client'],
+    esbuildOptions: {
+      target: 'esnext',
+    },
   },
   esbuild: {
     supported: {
@@ -36,8 +39,13 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    rollupOptions: {
-      external: ['@linera/client'],
+    // Don't externalize @linera/client, let it be bundled
+    commonjsOptions: {
+      transformMixedEsModules: true,
     },
+  },
+  // Handle @linera/client as an ES module
+  ssr: {
+    noExternal: ['@linera/client'],
   },
 });

@@ -5,19 +5,46 @@
  * All other code should use this adapter instead of importing @linera/client directly.
  */
 
-import { Faucet, Client, Wallet, Application } from '@linera/client';
 import type { Wallet as DynamicWallet } from '@dynamic-labs/sdk-react-core';
 import { ensureWasmInitialized } from './wasmInit';
 import { DynamicSigner } from './dynamicSigner';
+
+// Use 'any' for dynamic module types to avoid TypeScript issues with private constructors
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LineraClientModule = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Faucet = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Client = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Wallet = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Application = any;
+
+// Cached module reference
+let lineraClientModule: LineraClientModule | null = null;
+
+/**
+ * Dynamically load the @linera/client module
+ */
+async function getLineraClient(): Promise<LineraClientModule> {
+  if (lineraClientModule) return lineraClientModule;
+  try {
+    lineraClientModule = await import('@linera/client');
+    return lineraClientModule;
+  } catch (error) {
+    console.error('❌ Failed to load @linera/client:', error);
+    throw error;
+  }
+}
 
 // Environment configuration
 const DEFAULT_FAUCET_URL = 'https://faucet.testnet-conway.linera.net';
 const APPLICATION_ID = import.meta.env.VITE_APPLICATION_ID;
 
-// Validate APPLICATION_ID at module load
+// Validate APPLICATION_ID at module load (warning only, don't block)
 if (!APPLICATION_ID || APPLICATION_ID === '' || APPLICATION_ID === 'placeholder') {
-  console.error('❌ VITE_APPLICATION_ID is not set or invalid!');
-  console.error('Expected format: 64-character hex string');
+  console.warn('⚠️ VITE_APPLICATION_ID is not set. Blockchain features may be limited.');
 }
 
 /**
@@ -134,6 +161,9 @@ class LineraAdapterClass {
       // Step 1: Initialize WASM
       await ensureWasmInitialized();
       
+      // Step 1.5: Dynamically load @linera/client
+      const { Faucet, Client } = await getLineraClient();
+      
       // Step 2: Create faucet connection
       console.log(`📡 Connecting to faucet: ${faucetUrl}`);
       const faucet = new Faucet(faucetUrl);
@@ -155,7 +185,7 @@ class LineraAdapterClass {
       console.log('🔗 Creating Linera client...');
       const clientResult = new Client(wallet, signer);
       // Await the client creation (wasm-bindgen returns promise from constructor)
-      const client = await (clientResult as unknown as Promise<Client>);
+      const client = await clientResult;
       
       // Store connection
       this.connection = {
