@@ -46,21 +46,27 @@ export function useLineraConnection(): LineraConnectionState {
   
   // Local state
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isAppConnected, setIsAppConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(lineraAdapter.isConnected());
+  const [isAppConnected, setIsAppConnected] = useState(lineraAdapter.isApplicationConnected());
   const [error, setError] = useState<string | null>(null);
-  const [connection, setConnection] = useState<LineraConnection | null>(null);
+  const [connection, setConnection] = useState<LineraConnection | null>(lineraAdapter.getConnection());
   
   // Track if we've attempted auto-connect
   const autoConnectAttempted = useRef(false);
+  const isConnectingRef = useRef(false);
   
   /**
-   * Sync state from adapter
+   * Sync state from adapter (stable reference)
    */
   const syncState = useCallback(() => {
-    setIsConnected(lineraAdapter.isConnected());
-    setIsAppConnected(lineraAdapter.isApplicationConnected());
-    setConnection(lineraAdapter.getConnection());
+    const newIsConnected = lineraAdapter.isConnected();
+    const newIsAppConnected = lineraAdapter.isApplicationConnected();
+    const newConnection = lineraAdapter.getConnection();
+    
+    // Only update state if values actually changed
+    setIsConnected(prev => prev !== newIsConnected ? newIsConnected : prev);
+    setIsAppConnected(prev => prev !== newIsAppConnected ? newIsAppConnected : prev);
+    setConnection(prev => prev !== newConnection ? newConnection : prev);
   }, []);
   
   /**
@@ -78,7 +84,14 @@ export function useLineraConnection(): LineraConnectionState {
       return;
     }
     
+    // Prevent concurrent connections
+    if (isConnectingRef.current) {
+      console.log('⏳ Connection already in progress...');
+      return;
+    }
+    
     // Start connection
+    isConnectingRef.current = true;
     setIsConnecting(true);
     setError(null);
     
@@ -100,6 +113,7 @@ export function useLineraConnection(): LineraConnectionState {
       setError(message);
     } finally {
       setIsConnecting(false);
+      isConnectingRef.current = false;
     }
   }, [primaryWallet, syncState]);
   
@@ -124,27 +138,30 @@ export function useLineraConnection(): LineraConnectionState {
   // Subscribe to adapter state changes
   useEffect(() => {
     const unsubscribe = lineraAdapter.subscribe(syncState);
-    
-    // Initial sync
-    syncState();
-    
     return unsubscribe;
   }, [syncState]);
   
-  // Auto-connect when wallet becomes available
+  // Auto-connect when wallet becomes available (runs only once per wallet)
   useEffect(() => {
-    if (
-      isLoggedIn &&
-      primaryWallet &&
-      !isConnected &&
-      !isConnecting &&
-      !autoConnectAttempted.current
-    ) {
-      autoConnectAttempted.current = true;
-      console.log('🔄 Auto-connecting to Linera...');
-      connect();
+    // Skip if already connected or connecting
+    if (isConnected || isConnectingRef.current) {
+      return;
     }
-  }, [isLoggedIn, primaryWallet, isConnected, isConnecting, connect]);
+    
+    // Skip if already attempted for this wallet
+    if (autoConnectAttempted.current) {
+      return;
+    }
+    
+    // Skip if not logged in or no wallet
+    if (!isLoggedIn || !primaryWallet) {
+      return;
+    }
+    
+    autoConnectAttempted.current = true;
+    console.log('🔄 Auto-connecting to Linera...');
+    connect();
+  }, [isLoggedIn, primaryWallet, isConnected, connect]);
   
   // Auto-disconnect when user logs out
   useEffect(() => {
@@ -156,7 +173,9 @@ export function useLineraConnection(): LineraConnectionState {
   
   // Reset auto-connect flag when wallet changes
   useEffect(() => {
-    autoConnectAttempted.current = false;
+    if (primaryWallet?.address) {
+      autoConnectAttempted.current = false;
+    }
   }, [primaryWallet?.address]);
   
   return {

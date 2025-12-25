@@ -275,20 +275,20 @@ export function ProfilePage() {
         {/* XP Progress Bar */}
         <div className="mb-6">
           <div className="flex justify-between text-sm mb-2">
-            <span className="text-gray-400">Level {player.level}</span>
-            <span className="text-gray-400">Level {player.level + 1}</span>
+            <span className="text-gray-400">Level {player.level ?? 1}</span>
+            <span className="text-gray-400">Level {(player.level ?? 1) + 1}</span>
           </div>
           <div className="h-3 bg-arcade-darker rounded-full overflow-hidden">
             <motion.div
               initial={{ width: 0 }}
-              animate={{ width: `${levelProgress(player.totalXp)}%` }}
+              animate={{ width: `${levelProgress(player.totalXp ?? 0)}%` }}
               transition={{ duration: 1, ease: 'easeOut' }}
               className="h-full bg-gradient-to-r from-neon-pink to-neon-cyan"
             />
           </div>
           <div className="flex justify-between text-xs mt-1">
-            <span className="text-neon-yellow">{player.totalXp.toLocaleString()} XP</span>
-            <span className="text-gray-500">{xpForLevel(player.level).toLocaleString()} XP needed</span>
+            <span className="text-neon-yellow">{(player.totalXp ?? 0).toLocaleString()} XP</span>
+            <span className="text-gray-500">{xpForLevel(player.level ?? 1).toLocaleString()} XP needed</span>
           </div>
         </div>
 
@@ -298,7 +298,7 @@ export function ProfilePage() {
             <Sparkles className="w-6 h-6 text-neon-yellow mx-auto mb-2" />
             <p className="text-gray-500 text-xs mb-1">TOTAL XP</p>
             <p className="font-arcade text-xl text-neon-yellow">
-              {player.totalXp.toLocaleString()}
+              {(player.totalXp ?? 0).toLocaleString()}
             </p>
           </div>
           
@@ -306,7 +306,7 @@ export function ProfilePage() {
             <Trophy className="w-6 h-6 text-neon-green mx-auto mb-2" />
             <p className="text-gray-500 text-xs mb-1">LEVEL</p>
             <p className="font-arcade text-xl text-neon-green">
-              {player.level}
+              {player.level ?? 1}
             </p>
           </div>
           
@@ -314,7 +314,7 @@ export function ProfilePage() {
             <Gamepad2 className="w-6 h-6 text-neon-pink mx-auto mb-2" />
             <p className="text-gray-500 text-xs mb-1">GAMES</p>
             <p className="font-arcade text-xl text-neon-pink">
-              {player.gamesPlayed}
+              {player.gamesPlayed ?? 0}
             </p>
           </div>
           
@@ -329,23 +329,25 @@ export function ProfilePage() {
       </motion.div>
 
       {/* Registration Info */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="arcade-card rounded-xl p-4"
-      >
-        <p className="text-gray-500 text-xs mb-1">REGISTERED ON</p>
-        <p className="text-gray-300">
-          {new Date(player.registeredAt * 1000).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
-        </p>
-      </motion.div>
+      {player.registeredAt > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="arcade-card rounded-xl p-4"
+        >
+          <p className="text-gray-500 text-xs mb-1">REGISTERED ON</p>
+          <p className="text-gray-300">
+            {new Date(player.registeredAt * 1000).toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </p>
+        </motion.div>
+      )}
 
       {/* Blockchain Info */}
       <motion.div
