@@ -214,7 +214,7 @@ class ArcadeApiClass {
     if (result.player.totalXp > 0) {
       await backendApi.submitScore(
         wallet,
-        'SnakeSprint', // Sync XP as SnakeSprint game
+        GameType.SNAKE_SPRINT, // Use proper enum value (SCREAMING_SNAKE_CASE)
         0,
         result.player.totalXp,
         undefined,

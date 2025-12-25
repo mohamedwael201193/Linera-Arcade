@@ -19,9 +19,10 @@ export function ProfilePage() {
     player, 
     isRegistered, 
     registerPlayer, 
+    refreshPlayer,
     error: arcadeError
   } = useArcade();
-  const { leaderboard } = useLeaderboard();
+  const { leaderboard, refresh: refreshLeaderboard } = useLeaderboard();
 
   const [newUsername, setNewUsername] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -47,7 +48,11 @@ export function ProfilePage() {
     try {
       await arcadeApi.syncToLeaderboard();
       setSyncSuccess(true);
-      // Refresh leaderboard data
+      // Refresh player and leaderboard data after sync
+      await Promise.all([
+        refreshPlayer(),
+        refreshLeaderboard()
+      ]);
       setTimeout(() => setSyncSuccess(false), 3000);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Sync failed');
