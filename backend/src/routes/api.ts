@@ -75,7 +75,17 @@ router.get('/players/:wallet', async (req, res) => {
     if (!player) {
       return res.status(404).json({ error: 'Player not found' });
     }
-    res.json({ player });
+    // Transform to camelCase for frontend
+    res.json({ 
+      player: {
+        walletAddress: player.wallet_address,
+        username: player.username,
+        totalXp: Number(player.total_xp),
+        level: player.level,
+        gamesPlayed: player.games_played,
+        rank: 0
+      }
+    });
   } catch (error) {
     console.error('Error getting player:', error);
     res.status(500).json({ error: 'Failed to get player' });
