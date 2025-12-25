@@ -9,31 +9,35 @@ export type GameType =
   | 'COLOR_RUSH'
   | 'TYPING_BLITZ';
 
-// Contract game types (same as frontend - SCREAMING_SNAKE_CASE in async-graphql)
-export type ContractGameType = GameType;
+// Contract game types - only the original 5 that exist on blockchain
+export type ContractGameType = 
+  | 'SPEED_CLICKER'
+  | 'MEMORY_MATRIX'
+  | 'REACTION_STRIKE'
+  | 'MATH_BLITZ'
+  | 'SNAKE_SPRINT';
 
-// Map frontend GameType to contract GameType (identity since they're the same)
+// Map frontend GameType to contract GameType
+// New games map to similar existing games for blockchain submission
 export const GAME_TYPE_TO_CONTRACT: Record<GameType, ContractGameType> = {
   SPEED_CLICKER: 'SPEED_CLICKER',
   MEMORY_MATRIX: 'MEMORY_MATRIX',
   REACTION_STRIKE: 'REACTION_STRIKE',
   MATH_BLITZ: 'MATH_BLITZ',
   SNAKE_SPRINT: 'SNAKE_SPRINT',
-  AIM_TRAINER: 'AIM_TRAINER',
-  COLOR_RUSH: 'COLOR_RUSH',
-  TYPING_BLITZ: 'TYPING_BLITZ',
+  // New games map to similar existing games
+  AIM_TRAINER: 'REACTION_STRIKE',  // Both are reflex/accuracy games
+  COLOR_RUSH: 'MEMORY_MATRIX',      // Both test pattern recognition
+  TYPING_BLITZ: 'MATH_BLITZ',       // Both are speed/accuracy challenges
 };
 
-// Map contract GameType to frontend GameType (identity since they're the same)
+// Map contract GameType to frontend GameType
 export const CONTRACT_TO_GAME_TYPE: Record<ContractGameType, GameType> = {
   SPEED_CLICKER: 'SPEED_CLICKER',
   MEMORY_MATRIX: 'MEMORY_MATRIX',
   REACTION_STRIKE: 'REACTION_STRIKE',
   MATH_BLITZ: 'MATH_BLITZ',
   SNAKE_SPRINT: 'SNAKE_SPRINT',
-  AIM_TRAINER: 'AIM_TRAINER',
-  COLOR_RUSH: 'COLOR_RUSH',
-  TYPING_BLITZ: 'TYPING_BLITZ',
 };
 
 // Player data

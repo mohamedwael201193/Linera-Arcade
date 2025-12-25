@@ -1,7 +1,7 @@
 /**
  * Typing Blitz Game
  * 
- * Type the words as fast as possible!
+ * Type the words/sentences as fast as possible!
  * WPM and accuracy matter.
  * XP Formula: words_typed * 25 + wpm_bonus
  */
@@ -15,47 +15,169 @@ interface TypingBlitzGameProps {
   onComplete: (result: GameResult) => void;
 }
 
+// Extensive word lists with many more options
 const WORD_LISTS = {
-  easy: ['cat', 'dog', 'sun', 'run', 'fun', 'hot', 'red', 'big', 'cup', 'hat', 'map', 'pen', 'box', 'car', 'key'],
-  medium: ['apple', 'brain', 'cloud', 'dream', 'flame', 'grape', 'house', 'juice', 'lemon', 'mango', 'night', 'ocean', 'piano', 'queen', 'river'],
-  hard: ['arcade', 'blazing', 'crystal', 'digital', 'eclipse', 'fantasy', 'gateway', 'harmony', 'infinity', 'journey', 'kingdom', 'legends', 'mystery', 'nebula', 'phoenix'],
-  expert: ['blockchain', 'cyberpunk', 'dashboard', 'encryption', 'framework', 'galactic', 'hologram', 'interface', 'javascript', 'kubernetes', 'lightning', 'metaverse', 'neon', 'optimize', 'protocol'],
+  easy: [
+    'cat', 'dog', 'sun', 'run', 'fun', 'hot', 'red', 'big', 'cup', 'hat',
+    'map', 'pen', 'box', 'car', 'key', 'ice', 'top', 'low', 'sky', 'fly',
+    'web', 'net', 'win', 'sea', 'bee', 'owl', 'fox', 'gem', 'joy', 'zen',
+    'hop', 'zip', 'tap', 'mud', 'fog', 'dew', 'oak', 'elm', 'ivy', 'fir',
+    'bay', 'cub', 'den', 'fin', 'jaw', 'kit', 'lab', 'log', 'nap', 'pad',
+    'rib', 'sap', 'tab', 'van', 'wax', 'yak', 'zap', 'art', 'bug', 'cog',
+  ],
+  medium: [
+    'apple', 'brain', 'cloud', 'dream', 'flame', 'grape', 'house', 'juice',
+    'lemon', 'mango', 'night', 'ocean', 'piano', 'queen', 'river', 'storm',
+    'tiger', 'uncle', 'vivid', 'water', 'xenon', 'yield', 'zebra', 'angel',
+    'beach', 'coral', 'delta', 'eagle', 'frost', 'globe', 'happy', 'ivory',
+    'joker', 'karma', 'lunar', 'magic', 'noble', 'orbit', 'pixel', 'quest',
+    'radar', 'solar', 'token', 'ultra', 'vapor', 'wheel', 'youth', 'zesty',
+    'amber', 'blaze', 'crypt', 'dwarf', 'ember', 'flora', 'ghost', 'hyper',
+    'index', 'joint', 'kraft', 'logic', 'metro', 'nexus', 'omega', 'prism',
+  ],
+  hard: [
+    'arcade', 'blazing', 'crystal', 'digital', 'eclipse', 'fantasy', 'gateway',
+    'harmony', 'infinity', 'journey', 'kingdom', 'legends', 'mystery', 'nebula',
+    'phoenix', 'quantum', 'radiant', 'stellar', 'thunder', 'ultimate', 'voltage',
+    'whisper', 'xylonet', 'zephyr', 'alchemy', 'bounty', 'cascade', 'dynamo',
+    'entropy', 'fractal', 'glacier', 'holistic', 'impulse', 'jubilee', 'kinetic',
+    'labyrinth', 'mirage', 'nucleus', 'obsidian', 'paradox', 'quasar', 'remnant',
+    'spectrum', 'tempest', 'utopia', 'vanguard', 'wisteria', 'zenith', 'aurora',
+    'bastion', 'chimera', 'duality', 'ethereal', 'fortress', 'gravity', 'horizon',
+  ],
+  expert: [
+    'blockchain', 'cyberpunk', 'dashboard', 'encryption', 'framework', 'galactic',
+    'hologram', 'interface', 'javascript', 'kubernetes', 'lightning', 'metaverse',
+    'neon', 'optimize', 'protocol', 'quantum', 'resilient', 'synthesis', 'terminal',
+    'universal', 'virtualize', 'wavelength', 'xenomorph', 'yellowstone', 'zealously',
+    'algorithm', 'bandwidth', 'compression', 'decentralize', 'ecosystem', 'firewall',
+    'generation', 'hyperloop', 'innovation', 'javascript', 'knowledge', 'laboratory',
+    'multimedia', 'networking', 'orchestrate', 'peripheral', 'quarantine', 'revolution',
+    'systematic', 'technology', 'underlying', 'validation', 'workstation', 'xylophone',
+  ],
 };
 
+// Sentences for sentence mode (appears after 40 words)
+const SENTENCES = [
+  'the quick brown fox jumps over the lazy dog',
+  'pack my box with five dozen liquor jugs',
+  'how vexingly quick daft zebras jump',
+  'the five boxing wizards jump quickly',
+  'sphinx of black quartz judge my vow',
+  'two driven jocks help fax my big quiz',
+  'the jay pig fox dwelt quiz buck',
+  'jackdaws love my big sphinx of quartz',
+  'crazy frederick bought many very exquisite opal jewels',
+  'we promptly judged antique ivory buckles for the next prize',
+  'a wizard quick job vexes many dwarfs',
+  'jaded zombies acted quaintly but kept driving their oxen forward',
+  'the quick onyx goblin jumps over the lazy dwarf',
+  'grumpy wizards make toxic brew for the evil queen and jack',
+  'all questions asked by five watched experts amaze the judge',
+  'playing video games can improve your reaction time',
+  'blockchain technology enables decentralized applications',
+  'artificial intelligence is transforming many industries',
+  'the linera arcade hub rewards skilled gamers with experience points',
+  'practice makes perfect when it comes to typing speed',
+  'muscle memory develops through consistent daily practice',
+  'focus on accuracy first then gradually increase your speed',
+  'ergonomic keyboards can help prevent repetitive strain injuries',
+  'touch typing is faster than hunting and pecking',
+  'the average typing speed is around forty words per minute',
+  'professional typists can exceed one hundred words per minute',
+  'coding requires precise typing and attention to detail',
+  'cryptocurrency wallets store digital assets securely',
+  'smart contracts execute automatically when conditions are met',
+  'decentralized finance offers new opportunities for everyone',
+];
+
+// Programming/tech phrases for ultimate challenge
+const TECH_PHRASES = [
+  'const blockchain = new Linera()',
+  'function calculateXP(score) { return score * 10; }',
+  'await wallet.connect()',
+  'npm install @linera/client',
+  'git push origin main',
+  'docker-compose up -d',
+  'SELECT * FROM players ORDER BY xp DESC',
+  'export default function App() {}',
+  'useState, useEffect, useCallback',
+  'async function fetchLeaderboard() {}',
+  'return <motion.div animate={{ scale: 1 }} />',
+  'border-radius: 8px; background: linear-gradient',
+];
+
 const GAME_DURATION = 60; // seconds
+
+// Fisher-Yates shuffle for randomization
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = shuffled[i];
+    shuffled[i] = shuffled[j]!;
+    shuffled[j] = temp!;
+  }
+  return shuffled;
+}
 
 export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
   const [gameStarted, setGameStarted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION);
-  const [currentWord, setCurrentWord] = useState('');
+  const [currentText, setCurrentText] = useState('');
   const [userInput, setUserInput] = useState('');
   const [wordsTyped, setWordsTyped] = useState(0);
   const [correctChars, setCorrectChars] = useState(0);
   const [totalChars, setTotalChars] = useState(0);
   const [streak, setStreak] = useState(0);
   const [maxStreak, setMaxStreak] = useState(0);
-  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard' | 'expert'>('easy');
+  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard' | 'expert' | 'sentence' | 'tech'>('easy');
   const [showCorrect, setShowCorrect] = useState(false);
   const [showWrong, setShowWrong] = useState(false);
   
   const inputRef = useRef<HTMLInputElement>(null);
   const startTimeRef = useRef<number>(0);
+  const usedTextsRef = useRef<Set<string>>(new Set());
 
-  const getRandomWord = useCallback((): string => {
-    const words = WORD_LISTS[difficulty];
-    const word = words[Math.floor(Math.random() * words.length)];
-    return word || 'arcade';
+  const getRandomText = useCallback((): string => {
+    let textPool: string[];
+    
+    if (difficulty === 'sentence') {
+      textPool = SENTENCES;
+    } else if (difficulty === 'tech') {
+      textPool = TECH_PHRASES;
+    } else {
+      textPool = WORD_LISTS[difficulty];
+    }
+    
+    // Filter out recently used texts
+    let availableTexts = textPool.filter(t => !usedTextsRef.current.has(t));
+    
+    // If we've used too many, reset the used set
+    if (availableTexts.length < 5) {
+      usedTextsRef.current.clear();
+      availableTexts = textPool;
+    }
+    
+    // Shuffle and pick one
+    const shuffled = shuffleArray(availableTexts);
+    const selected = shuffled[0] || 'arcade';
+    usedTextsRef.current.add(selected);
+    
+    return selected;
   }, [difficulty]);
 
-  const nextWord = useCallback(() => {
-    setCurrentWord(getRandomWord());
+  const nextText = useCallback(() => {
+    setCurrentText(getRandomText());
     setUserInput('');
-  }, [getRandomWord]);
+  }, [getRandomText]);
 
   const updateDifficulty = useCallback((typed: number) => {
-    if (typed >= 30) setDifficulty('expert');
-    else if (typed >= 20) setDifficulty('hard');
-    else if (typed >= 10) setDifficulty('medium');
+    if (typed >= 50) setDifficulty('tech');
+    else if (typed >= 40) setDifficulty('sentence');
+    else if (typed >= 25) setDifficulty('expert');
+    else if (typed >= 15) setDifficulty('hard');
+    else if (typed >= 8) setDifficulty('medium');
     else setDifficulty('easy');
   }, []);
 
@@ -64,14 +186,15 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
     setUserInput(value);
     setTotalChars(t => t + 1);
 
-    // Check if word is complete
-    if (value.toLowerCase() === currentWord.toLowerCase()) {
+    // Check if text is complete
+    if (value.toLowerCase() === currentText.toLowerCase()) {
+      const wordCount = currentText.split(' ').length;
       setWordsTyped(w => {
-        const newCount = w + 1;
+        const newCount = w + wordCount;
         updateDifficulty(newCount);
         return newCount;
       });
-      setCorrectChars(c => c + currentWord.length);
+      setCorrectChars(c => c + currentText.length);
       setStreak(s => {
         const newStreak = s + 1;
         setMaxStreak(m => Math.max(m, newStreak));
@@ -79,8 +202,8 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
       });
       setShowCorrect(true);
       setTimeout(() => setShowCorrect(false), 200);
-      nextWord();
-    } else if (value.length > 0 && !currentWord.toLowerCase().startsWith(value.toLowerCase())) {
+      nextText();
+    } else if (value.length > 0 && !currentText.toLowerCase().startsWith(value.toLowerCase())) {
       // Wrong character - flash red but don't reset
       setShowWrong(true);
       setTimeout(() => setShowWrong(false), 100);
@@ -88,11 +211,11 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Skip word with Tab
+    // Skip text with Tab
     if (e.key === 'Tab') {
       e.preventDefault();
       setStreak(0);
-      nextWord();
+      nextText();
     }
     // Clear with Escape
     if (e.key === 'Escape') {
@@ -148,13 +271,33 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
     setMaxStreak(0);
     setDifficulty('easy');
     setUserInput('');
+    usedTextsRef.current.clear();
     startTimeRef.current = Date.now();
-    nextWord();
+    nextText();
   };
 
   const accuracy = totalChars > 0 ? Math.round((correctChars / totalChars) * 100) : 100;
   const elapsedSeconds = GAME_DURATION - timeLeft;
   const wpm = elapsedSeconds > 0 ? Math.round((wordsTyped / elapsedSeconds) * 60) : 0;
+
+  const getDifficultyColor = () => {
+    switch (difficulty) {
+      case 'easy': return 'bg-green-500/20 text-green-400';
+      case 'medium': return 'bg-yellow-500/20 text-yellow-400';
+      case 'hard': return 'bg-orange-500/20 text-orange-400';
+      case 'expert': return 'bg-red-500/20 text-red-400';
+      case 'sentence': return 'bg-purple-500/20 text-purple-400';
+      case 'tech': return 'bg-cyan-500/20 text-cyan-400';
+    }
+  };
+
+  const getDifficultyLabel = () => {
+    switch (difficulty) {
+      case 'sentence': return 'SENTENCES';
+      case 'tech': return 'CODE MODE';
+      default: return difficulty.toUpperCase();
+    }
+  };
 
   if (!gameStarted) {
     return (
@@ -166,14 +309,18 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
         >
           <Keyboard className="w-20 h-20 text-emerald-500 mx-auto mb-6" />
           <h2 className="font-arcade text-2xl mb-4 text-emerald-400">TYPING BLITZ</h2>
-          <p className="text-gray-400 mb-2">Type the words as fast as you can!</p>
-          <p className="text-gray-500 text-sm mb-6">Press TAB to skip, ESC to clear</p>
+          <p className="text-gray-400 mb-2">Type words, sentences, and code!</p>
+          <p className="text-gray-500 text-sm mb-6">Difficulty increases as you progress - reach CODE MODE!</p>
           
           <div className="bg-arcade-darker rounded-lg p-4 mb-6">
             <p className="text-gray-400 text-sm">XP FORMULA</p>
             <p className="text-emerald-400 font-mono">
               XP = words × 25 + WPM_bonus
             </p>
+          </div>
+
+          <div className="text-gray-500 text-xs mb-6 space-y-1">
+            <p>🟢 Easy → 🟡 Medium → 🟠 Hard → 🔴 Expert → 🟣 Sentences → 🔵 Code</p>
           </div>
 
           <motion.button
@@ -222,13 +369,8 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
 
       {/* Difficulty Badge */}
       <div className="text-center mb-4">
-        <span className={`px-3 py-1 rounded-full text-xs font-arcade ${
-          difficulty === 'easy' ? 'bg-green-500/20 text-green-400' :
-          difficulty === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
-          difficulty === 'hard' ? 'bg-orange-500/20 text-orange-400' :
-          'bg-red-500/20 text-red-400'
-        }`}>
-          {difficulty.toUpperCase()}
+        <span className={`px-3 py-1 rounded-full text-xs font-arcade ${getDifficultyColor()}`}>
+          {getDifficultyLabel()}
         </span>
       </div>
 
@@ -243,9 +385,16 @@ export function TypingBlitzGame({ onComplete }: TypingBlitzGameProps) {
           <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 to-cyan-500 animate-pulse" />
         </div>
         
-        <p className="text-gray-500 text-sm mb-4">TYPE THIS WORD:</p>
-        <div className="font-mono text-4xl md:text-6xl tracking-wider mb-4">
-          {currentWord.split('').map((char, i) => {
+        <p className="text-gray-500 text-sm mb-4">
+          {difficulty === 'sentence' ? 'TYPE THIS SENTENCE:' : 
+           difficulty === 'tech' ? 'TYPE THIS CODE:' : 'TYPE THIS WORD:'}
+        </p>
+        <div className={`font-mono tracking-wider mb-4 ${
+          difficulty === 'sentence' || difficulty === 'tech' 
+            ? 'text-xl md:text-2xl' 
+            : 'text-4xl md:text-6xl'
+        }`}>
+          {currentText.split('').map((char, i) => {
             const inputChar = userInput[i];
             let color = 'text-gray-600';
             if (inputChar) {

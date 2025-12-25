@@ -259,17 +259,17 @@ export function ColorRushGame({ onComplete }: ColorRushGameProps) {
       </motion.div>
 
       {/* Color Buttons */}
-      <div className="grid grid-cols-3 gap-4 max-w-md mx-auto">
+      <div className="grid grid-cols-3 gap-3 max-w-lg mx-auto px-4">
         {COLORS.map(color => (
           <motion.button
             key={color.name}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => handleColorClick(color)}
-            className="aspect-square rounded-xl flex items-center justify-center font-arcade text-white text-sm transition-all"
+            className="w-full h-24 md:h-28 rounded-xl flex items-center justify-center font-arcade text-white text-xs md:text-sm transition-all border-2 border-white/20"
             style={{
               backgroundColor: color.hex,
-              boxShadow: `0 0 20px ${color.glow}`,
+              boxShadow: `0 0 20px ${color.glow}, inset 0 0 20px rgba(255,255,255,0.1)`,
             }}
           >
             {color.name}
