@@ -20,6 +20,9 @@ export enum GameType {
   REACTION_STRIKE = 'REACTION_STRIKE',
   MATH_BLITZ = 'MATH_BLITZ',
   SNAKE_SPRINT = 'SNAKE_SPRINT',
+  AIM_TRAINER = 'AIM_TRAINER',
+  COLOR_RUSH = 'COLOR_RUSH',
+  TYPING_BLITZ = 'TYPING_BLITZ',
 }
 
 /**
@@ -31,6 +34,9 @@ export const GAME_TYPE_NAMES: Record<GameType, string> = {
   [GameType.REACTION_STRIKE]: 'Reaction Strike',
   [GameType.MATH_BLITZ]: 'Math Blitz',
   [GameType.SNAKE_SPRINT]: 'Snake Sprint',
+  [GameType.AIM_TRAINER]: 'Aim Trainer',
+  [GameType.COLOR_RUSH]: 'Color Rush',
+  [GameType.TYPING_BLITZ]: 'Typing Blitz',
 };
 
 /**
@@ -42,6 +48,9 @@ export const GAME_ID_TO_TYPE: Record<string, GameType> = {
   'reaction-strike': GameType.REACTION_STRIKE,
   'math-blitz': GameType.MATH_BLITZ,
   'snake-sprint': GameType.SNAKE_SPRINT,
+  'aim-trainer': GameType.AIM_TRAINER,
+  'color-rush': GameType.COLOR_RUSH,
+  'typing-blitz': GameType.TYPING_BLITZ,
 };
 
 /**

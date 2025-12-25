@@ -4,7 +4,10 @@ export type GameType =
   | 'MEMORY_MATRIX'
   | 'REACTION_STRIKE'
   | 'MATH_BLITZ'
-  | 'SNAKE_SPRINT';
+  | 'SNAKE_SPRINT'
+  | 'AIM_TRAINER'
+  | 'COLOR_RUSH'
+  | 'TYPING_BLITZ';
 
 // Contract game types (same as frontend - SCREAMING_SNAKE_CASE in async-graphql)
 export type ContractGameType = GameType;
@@ -16,6 +19,9 @@ export const GAME_TYPE_TO_CONTRACT: Record<GameType, ContractGameType> = {
   REACTION_STRIKE: 'REACTION_STRIKE',
   MATH_BLITZ: 'MATH_BLITZ',
   SNAKE_SPRINT: 'SNAKE_SPRINT',
+  AIM_TRAINER: 'AIM_TRAINER',
+  COLOR_RUSH: 'COLOR_RUSH',
+  TYPING_BLITZ: 'TYPING_BLITZ',
 };
 
 // Map contract GameType to frontend GameType (identity since they're the same)
@@ -25,6 +31,9 @@ export const CONTRACT_TO_GAME_TYPE: Record<ContractGameType, GameType> = {
   REACTION_STRIKE: 'REACTION_STRIKE',
   MATH_BLITZ: 'MATH_BLITZ',
   SNAKE_SPRINT: 'SNAKE_SPRINT',
+  AIM_TRAINER: 'AIM_TRAINER',
+  COLOR_RUSH: 'COLOR_RUSH',
+  TYPING_BLITZ: 'TYPING_BLITZ',
 };
 
 // Player data
@@ -149,6 +158,45 @@ export const GAME_CONFIGS: Record<GameType, GameConfig> = {
     ],
     xpFormula: 'XP = length × 15 + apples × 5',
   },
+  AIM_TRAINER: {
+    id: 'AIM_TRAINER',
+    name: 'Aim Trainer',
+    description: 'Click targets as fast as possible!',
+    color: '#ff0055',
+    icon: 'Target',
+    instructions: [
+      'Click on targets before they disappear',
+      'Smaller targets are harder but spawn faster',
+      'Build combos for accuracy bonus',
+    ],
+    xpFormula: 'XP = hits × 20 + accuracy_bonus',
+  },
+  COLOR_RUSH: {
+    id: 'COLOR_RUSH',
+    name: 'Color Rush',
+    description: 'Match the color shown - but watch out for tricks!',
+    color: '#bf00ff',
+    icon: 'Palette',
+    instructions: [
+      'Click the COLOR shown, not the word!',
+      'The word might trick you - focus on the actual color',
+      'Build streaks for bonus points',
+    ],
+    xpFormula: 'XP = matches × 30 + streak_bonus',
+  },
+  TYPING_BLITZ: {
+    id: 'TYPING_BLITZ',
+    name: 'Typing Blitz',
+    description: 'Type words as fast as you can!',
+    color: '#00ffaa',
+    icon: 'Keyboard',
+    instructions: [
+      'Type the displayed word correctly',
+      'Press TAB to skip, ESC to clear',
+      'Difficulty increases as you type more',
+    ],
+    xpFormula: 'XP = words × 25 + WPM_bonus',
+  },
 };
 
 // Helper to get game config by ID
@@ -169,6 +217,12 @@ export function estimateXp(gameType: GameType, score: number, bonusData?: number
       return score * 25 + (bonusData || 0) * 10;
     case 'SNAKE_SPRINT':
       return score * 15 + (bonusData || 0) * 5;
+    case 'AIM_TRAINER':
+      return score * 20 + Math.floor((bonusData || 0) / 10) * 5;
+    case 'COLOR_RUSH':
+      return score * 30 + (bonusData || 0) * 10;
+    case 'TYPING_BLITZ':
+      return score * 25 + Math.floor((bonusData || 0) / 10) * 5;
     default:
       return 0;
   }

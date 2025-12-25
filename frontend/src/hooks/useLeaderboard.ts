@@ -55,6 +55,9 @@ export function useLeaderboard(): LeaderboardState {
     [GameTypeEnum.REACTION_STRIKE]: [],
     [GameTypeEnum.MATH_BLITZ]: [],
     [GameTypeEnum.SNAKE_SPRINT]: [],
+    [GameTypeEnum.AIM_TRAINER]: [],
+    [GameTypeEnum.COLOR_RUSH]: [],
+    [GameTypeEnum.TYPING_BLITZ]: [],
   });
   const [stats, setStats] = useState({
     totalPlayers: 0,
@@ -128,6 +131,9 @@ export function useLeaderboard(): LeaderboardState {
         [GameTypeEnum.REACTION_STRIKE]: [],
         [GameTypeEnum.MATH_BLITZ]: [],
         [GameTypeEnum.SNAKE_SPRINT]: [],
+        [GameTypeEnum.AIM_TRAINER]: [],
+        [GameTypeEnum.COLOR_RUSH]: [],
+        [GameTypeEnum.TYPING_BLITZ]: [],
       };
       
       for (const { gameType, scores } of highScoreResults) {

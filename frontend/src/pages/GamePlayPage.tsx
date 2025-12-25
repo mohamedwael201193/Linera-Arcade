@@ -27,6 +27,9 @@ import { MemoryMatrixGame } from '../games/MemoryMatrix';
 import { ReactionStrikeGame } from '../games/ReactionStrike';
 import { MathBlitzGame } from '../games/MathBlitz';
 import { SnakeSprintGame } from '../games/SnakeSprint';
+import { AimTrainerGame } from '../games/AimTrainer';
+import { ColorRushGame } from '../games/ColorRush';
+import { TypingBlitzGame } from '../games/TypingBlitz';
 
 type GameState = 'ready' | 'playing' | 'finished' | 'submitting' | 'submitted';
 
@@ -36,6 +39,9 @@ const GAME_COMPONENTS: Record<GameType, React.FC<{ onComplete: (result: GameResu
   REACTION_STRIKE: ReactionStrikeGame,
   MATH_BLITZ: MathBlitzGame,
   SNAKE_SPRINT: SnakeSprintGame,
+  AIM_TRAINER: AimTrainerGame,
+  COLOR_RUSH: ColorRushGame,
+  TYPING_BLITZ: TypingBlitzGame,
 };
 
 export function GamePlayPage() {

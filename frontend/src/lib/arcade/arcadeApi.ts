@@ -56,6 +56,12 @@ function calculateXP(gameType: GameType, score: number, bonusData?: number): num
       return score * 25 + (bonusData || 0) * 10;
     case GameType.SNAKE_SPRINT:
       return score * 15 + (bonusData || 0) * 5;
+    case GameType.AIM_TRAINER:
+      return score * 20 + Math.floor((bonusData || 0) / 10) * 5;
+    case GameType.COLOR_RUSH:
+      return score * 30 + (bonusData || 0) * 10;
+    case GameType.TYPING_BLITZ:
+      return score * 25 + Math.floor((bonusData || 0) / 10) * 5;
     default:
       return score;
   }
