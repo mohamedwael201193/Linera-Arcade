@@ -162,7 +162,8 @@ function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function formatNumber(num: number): string {
+function formatNumber(num: number | undefined | null): string {
+  if (num == null) return '0';
   if (num >= 1000000) {
     return (num / 1000000).toFixed(1) + 'M';
   }

@@ -259,7 +259,7 @@ function StatsCard({ icon: Icon, label, value, color, delay }: StatsCardProps) {
         <div>
           <p className="text-gray-500 text-xs">{label}</p>
           <p className="font-arcade text-2xl" style={{ color }}>
-            {value.toLocaleString()}
+            {(value ?? 0).toLocaleString()}
           </p>
         </div>
       </div>

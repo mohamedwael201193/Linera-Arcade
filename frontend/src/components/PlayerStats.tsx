@@ -8,9 +8,9 @@ interface PlayerStatsProps {
 }
 
 export function PlayerStats({ player }: PlayerStatsProps) {
-  const progress = levelProgress(player.totalXp);
-  const nextLevelXp = xpForLevel(player.level);
-  const xpToNext = nextLevelXp - player.totalXp;
+  const progress = levelProgress(player.totalXp ?? 0);
+  const nextLevelXp = xpForLevel(player.level ?? 1);
+  const xpToNext = nextLevelXp - (player.totalXp ?? 0);
 
   return (
     <div className="arcade-card rounded-xl p-6">
@@ -37,11 +37,11 @@ export function PlayerStats({ player }: PlayerStatsProps) {
           <div className="flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-neon-green" />
             <span className="font-arcade text-sm text-neon-green">
-              LEVEL {player.level}
+              LEVEL {player.level ?? 1}
             </span>
           </div>
           <span className="text-gray-400 text-xs">
-            {xpToNext.toLocaleString()} XP to next level
+            {(xpToNext ?? 0).toLocaleString()} XP to next level
           </span>
         </div>
         <div className="xp-bar">
@@ -59,19 +59,19 @@ export function PlayerStats({ player }: PlayerStatsProps) {
         <StatCard
           icon={Star}
           label="TOTAL XP"
-          value={player.totalXp.toLocaleString()}
+          value={(player.totalXp ?? 0).toLocaleString()}
           color="#ffff00"
         />
         <StatCard
           icon={Gamepad2}
           label="GAMES"
-          value={player.gamesPlayed.toString()}
+          value={(player.gamesPlayed ?? 0).toString()}
           color="#00ffff"
         />
         <StatCard
           icon={TrendingUp}
           label="LEVEL"
-          value={player.level.toString()}
+          value={(player.level ?? 1).toString()}
           color="#00ff00"
         />
       </div>

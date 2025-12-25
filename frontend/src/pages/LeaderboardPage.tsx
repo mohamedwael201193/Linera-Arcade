@@ -174,7 +174,7 @@ export function LeaderboardPage() {
                     </td>
                     <td className="px-4 py-4 text-right">
                       <span className="font-arcade text-neon-yellow">
-                        {entry.totalXp.toLocaleString()}
+                        {(entry.totalXp ?? 0).toLocaleString()}
                       </span>
                     </td>
                   </motion.tr>

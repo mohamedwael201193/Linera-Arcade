@@ -252,14 +252,14 @@ export function GamePlayPage() {
                     className="font-arcade text-3xl"
                     style={{ color: gameConfig.color }}
                   >
-                    {gameResult.score.toLocaleString()}
+                    {(gameResult?.score ?? 0).toLocaleString()}
                   </p>
                 </div>
                 <div className="bg-arcade-darker rounded-lg p-4">
                   <p className="text-gray-500 text-xs mb-1">XP EARNED</p>
                   <p className="font-arcade text-3xl text-neon-yellow flex items-center justify-center gap-2">
                     <Sparkles className="w-6 h-6" />
-                    {xpEarned.toLocaleString()}
+                    {(xpEarned ?? 0).toLocaleString()}
                   </p>
                 </div>
               </div>
@@ -356,13 +356,13 @@ export function GamePlayPage() {
             </div>
             <div>
               <p className="font-arcade text-sm">{player.username}</p>
-              <p className="text-gray-500 text-xs">Level {player.level}</p>
+              <p className="text-gray-500 text-xs">Level {player.level ?? 1}</p>
             </div>
           </div>
           <div className="text-right">
             <p className="text-gray-500 text-xs">TOTAL XP</p>
             <p className="font-arcade text-neon-yellow">
-              {player.totalXp.toLocaleString()}
+              {(player.totalXp ?? 0).toLocaleString()}
             </p>
           </div>
         </motion.div>
