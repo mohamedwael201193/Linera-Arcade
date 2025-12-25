@@ -21,7 +21,7 @@ const RegisterPlayerSchema = z.object({
 
 const SubmitScoreSchema = z.object({
   wallet_address: z.string().min(10).max(66),
-  game_type: z.enum(['SpeedClicker', 'MemoryMatrix', 'ReactionStrike', 'MathBlitz', 'SnakeSprint']),
+  game_type: z.enum(['SPEED_CLICKER', 'MEMORY_MATRIX', 'REACTION_STRIKE', 'MATH_BLITZ', 'SNAKE_SPRINT']),
   score: z.number().int().min(0),
   xp_earned: z.number().int().min(0),
   bonus_data: z.number().int().optional(),
