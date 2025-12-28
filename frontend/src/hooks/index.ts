@@ -5,3 +5,4 @@
 export { useLineraConnection, type LineraConnectionState } from './useLineraConnection';
 export { useArcade, type ArcadeState } from './useArcade';
 export { useLeaderboard, type LeaderboardState } from './useLeaderboard';
+export { usePredictions, type PredictionState, type PredictionActions } from './usePredictions';

@@ -14,6 +14,10 @@ import {
   GET_PLAYER,
   REGISTER_PLAYER,
   SUBMIT_SCORE,
+  GET_COIN_BALANCE,
+  CLAIM_DAILY_BONUS,
+  PLACE_CRYPTO_PREDICTION,
+  PLACE_EVENT_PREDICTION,
 } from './queries';
 import type {
   Player,
@@ -419,6 +423,164 @@ class ArcadeApiClass {
         topXp: 0,
         highestLevel: 1,
       };
+    }
+  }
+
+  // ===========================================================================
+  // COIN & PREDICTION OPERATIONS (NEW)
+  // ===========================================================================
+
+  /**
+   * Get user's coin balance from blockchain
+   * 
+   * @param wallet - Wallet address
+   * @returns Coin balance or 0 if not found
+   */
+  async getCoinBalance(wallet: string): Promise<number> {
+    try {
+      const result = await lineraAdapter.query<{ coinBalance: number }>(
+        GET_COIN_BALANCE,
+        { wallet: wallet.toLowerCase() }
+      );
+      return result.coinBalance || 0;
+    } catch (error) {
+      console.error('Failed to get coin balance:', error);
+      // Fall back to backend
+      try {
+        const balance = await backendApi.getCoinBalance(wallet);
+        return balance.balance || 0;
+      } catch {
+        return 0;
+      }
+    }
+  }
+
+  /**
+   * Claim daily bonus (100 coins)
+   * 1. Submits to blockchain
+   * 2. Syncs to backend
+   * 
+   * @returns true if bonus was claimed
+   */
+  async claimDailyBonus(): Promise<boolean> {
+    console.log('🎁 Claiming daily bonus...');
+    
+    try {
+      // Step 1: Submit to blockchain
+      await lineraAdapter.mutate<{ claimDailyBonus: boolean }>(
+        CLAIM_DAILY_BONUS,
+        {}
+      );
+      
+      console.log('✅ Daily bonus claimed on blockchain');
+      
+      // Step 2: Sync to backend
+      const wallet = lineraAdapter.getAddress();
+      if (wallet) {
+        backendApi.claimDailyBonus(wallet)
+          .then(() => console.log('✅ Daily bonus synced to backend'))
+          .catch(err => console.warn('⚠️ Failed to sync bonus to backend:', err));
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to claim daily bonus:', error);
+      
+      // Try backend-only claim if blockchain fails
+      const wallet = lineraAdapter.getAddress();
+      if (wallet) {
+        try {
+          const result = await backendApi.claimDailyBonus(wallet);
+          return result.success;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Place a crypto prediction (UP/DOWN)
+   * 1. Submits to blockchain
+   * 2. Syncs to backend
+   * 
+   * @param roundId - Crypto round ID
+   * @param direction - 'UP' or 'DOWN'
+   * @param coinsStaked - Amount of coins to stake
+   * @returns true if prediction was placed
+   */
+  async placeCryptoPrediction(
+    roundId: number,
+    direction: 'UP' | 'DOWN',
+    coinsStaked: number
+  ): Promise<boolean> {
+    console.log(`📊 Placing crypto prediction: ${direction} with ${coinsStaked} coins`);
+    
+    try {
+      // Step 1: Submit to blockchain
+      // Variable names must match the GraphQL mutation: round_id, direction, amount
+      await lineraAdapter.mutate<{ placeCryptoPrediction: boolean }>(
+        PLACE_CRYPTO_PREDICTION,
+        { round_id: roundId, direction, amount: coinsStaked }
+      );
+      
+      console.log('✅ Crypto prediction placed on blockchain');
+      
+      // Step 2: Sync to backend
+      const wallet = lineraAdapter.getAddress();
+      if (wallet) {
+        backendApi.placeCryptoPrediction(wallet, roundId, direction, coinsStaked)
+          .then(() => console.log('✅ Prediction synced to backend'))
+          .catch(err => console.warn('⚠️ Failed to sync prediction to backend:', err));
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to place crypto prediction:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Place a world event prediction
+   * 1. Submits to blockchain
+   * 2. Syncs to backend
+   * 
+   * @param eventId - World event ID
+   * @param outcome - Predicted outcome
+   * @param coinsStaked - Amount of coins to stake
+   * @returns true if prediction was placed
+   */
+  async placeEventPrediction(
+    eventId: number,
+    outcome: string,
+    coinsStaked: number
+  ): Promise<boolean> {
+    console.log(`🌍 Placing event prediction: ${outcome} with ${coinsStaked} coins`);
+    
+    try {
+      // Step 1: Submit to blockchain
+      // Variable names must match the GraphQL mutation: event_id, outcome, amount
+      await lineraAdapter.mutate<{ placeEventPrediction: boolean }>(
+        PLACE_EVENT_PREDICTION,
+        { event_id: eventId, outcome, amount: coinsStaked }
+      );
+      
+      console.log('✅ Event prediction placed on blockchain');
+      
+      // Step 2: Sync to backend
+      const wallet = lineraAdapter.getAddress();
+      if (wallet) {
+        backendApi.placeEventPrediction(wallet, eventId, outcome, coinsStaked)
+          .then(() => console.log('✅ Prediction synced to backend'))
+          .catch(err => console.warn('⚠️ Failed to sync prediction to backend:', err));
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to place event prediction:', error);
+      return false;
     }
   }
 }

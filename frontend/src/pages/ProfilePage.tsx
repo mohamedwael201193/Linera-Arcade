@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDynamicContext } from '@dynamic-labs/sdk-react-core';
-import { User, AlertCircle, Wallet, Loader2, Trophy, Gamepad2, Sparkles, Link as LinkIcon, RefreshCw, CheckCircle } from 'lucide-react';
-import { useLineraConnection, useArcade, useLeaderboard } from '../hooks';
-import { levelProgress, xpForLevel } from '../types';
+import { User, AlertCircle, Wallet, Loader2, Trophy, Gamepad2, Sparkles, Link as LinkIcon, RefreshCw, CheckCircle, Gift, Coins } from 'lucide-react';
+import { useLineraConnection, useArcade, useLeaderboard, usePredictions } from '../hooks';
+import { levelProgress, xpForLevel, formatCoins } from '../types';
 import { arcadeApi } from '../lib/arcade';
 
 export function ProfilePage() {
@@ -23,12 +23,15 @@ export function ProfilePage() {
     error: arcadeError
   } = useArcade();
   const { leaderboard, refresh: refreshLeaderboard } = useLeaderboard();
+  const predictions = usePredictions(primaryWallet?.address || null);
 
   const [newUsername, setNewUsername] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
+  const [isClaimingBonus, setIsClaimingBonus] = useState(false);
+  const [bonusMessage, setBonusMessage] = useState<string | null>(null);
 
   const error = localError || arcadeError || connectionError;
 
@@ -39,6 +42,28 @@ export function ProfilePage() {
 
   // Check if player is on leaderboard
   const isOnLeaderboard = playerRank !== null && playerRank > 0;
+
+  // Handle claim daily bonus
+  const handleClaimDailyBonus = async () => {
+    // Allow claim if coinBalance is null (not loaded) or canClaimDaily is true
+    if (predictions.coinBalance !== null && !predictions.coinBalance.canClaimDaily) return;
+    setIsClaimingBonus(true);
+    setBonusMessage(null);
+    try {
+      const result = await predictions.claimDailyBonus();
+      if (result?.success) {
+        setBonusMessage(`🎉 Claimed ${result.coins} coins!`);
+        predictions.refreshUserData();
+        setTimeout(() => setBonusMessage(null), 3000);
+      } else {
+        setLocalError('Failed to claim bonus. You may have already claimed today.');
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Failed to claim bonus');
+    } finally {
+      setIsClaimingBonus(false);
+    }
+  };
 
   const handleSyncToLeaderboard = async () => {
     setIsSyncing(true);
@@ -298,7 +323,7 @@ export function ProfilePage() {
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-arcade-darker rounded-lg p-4 text-center">
             <Sparkles className="w-6 h-6 text-neon-yellow mx-auto mb-2" />
             <p className="text-gray-500 text-xs mb-1">TOTAL XP</p>
@@ -330,6 +355,67 @@ export function ProfilePage() {
               {playerRank ? `#${playerRank}` : '-'}
             </p>
           </div>
+        </div>
+
+        {/* Coin Balance & Daily Bonus */}
+        <div className="bg-gradient-to-r from-yellow-900/30 to-orange-900/30 rounded-xl p-4 border border-yellow-500/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-yellow-500/20 flex items-center justify-center">
+                <Coins className="w-6 h-6 text-yellow-400" />
+              </div>
+              <div>
+                <p className="text-gray-400 text-xs">ARCADE COINS</p>
+                <p className="font-arcade text-2xl text-yellow-400">
+                  {predictions.coinBalance ? formatCoins(predictions.coinBalance.balance) : '0'}
+                </p>
+              </div>
+            </div>
+            
+            <motion.button
+              whileHover={{ scale: (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? 1.05 : 1 }}
+              whileTap={{ scale: (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? 0.95 : 1 }}
+              onClick={handleClaimDailyBonus}
+              disabled={(predictions.coinBalance !== null && !predictions.coinBalance.canClaimDaily) || isClaimingBonus}
+              className={`px-4 py-3 rounded-xl font-arcade text-sm flex items-center gap-2 transition-all ${
+                predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily
+                  ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg shadow-green-500/25 animate-pulse'
+                  : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              {isClaimingBonus ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  CLAIMING...
+                </>
+              ) : (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? (
+                <>
+                  <Gift className="w-4 h-4" />
+                  CLAIM +100
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="w-4 h-4" />
+                  CLAIMED TODAY
+                </>
+              )}
+            </motion.button>
+          </div>
+          
+          {bonusMessage && (
+            <motion.p
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-green-400 text-sm mt-3 text-center"
+            >
+              {bonusMessage}
+            </motion.p>
+          )}
+          
+          <p className="text-gray-500 text-xs mt-3">
+            Earn coins by playing games (10 coins per game) and claim daily bonus (100 coins).
+            Use coins to make predictions on crypto prices and world events!
+          </p>
         </div>
       </motion.div>
 

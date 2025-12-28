@@ -1,11 +1,13 @@
 /**
  * API Routes for Linera Arcade Backend
  * Uses in-memory database for development, PostgreSQL for production
+ * Extended with Prediction Markets API
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { memoryDb } from '../db/memory.js';
+import { binanceService } from '../services/binance.js';
 
 const router = Router();
 
@@ -26,6 +28,42 @@ const SubmitScoreSchema = z.object({
   xp_earned: z.number().int().min(0),
   bonus_data: z.number().int().optional(),
   chain_id: z.string().optional()
+});
+
+// Prediction schemas
+const CreateCryptoRoundSchema = z.object({
+  asset: z.enum(['BTC', 'ETH']),
+  start_price: z.number().int().min(0),
+  duration_secs: z.number().int().min(60).max(3600).default(300),
+});
+
+const PlaceCryptoPredictionSchema = z.object({
+  wallet_address: z.string().min(10).max(66),
+  round_id: z.number().int().min(0),
+  direction: z.enum(['UP', 'DOWN']),
+  amount: z.number().int().min(10).max(10000),
+});
+
+const ResolveCryptoRoundSchema = z.object({
+  end_price: z.number().int().min(0),
+});
+
+const CreateWorldEventSchema = z.object({
+  title: z.string().min(10).max(200),
+  description: z.string().min(10).max(1000),
+  category: z.string().min(2).max(50),
+  end_time: z.string().transform(str => new Date(str)),
+});
+
+const PlaceEventPredictionSchema = z.object({
+  wallet_address: z.string().min(10).max(66),
+  event_id: z.number().int().min(0),
+  outcome: z.string().min(1).max(200),
+  amount: z.number().int().min(10).max(10000),
+});
+
+const ResolveWorldEventSchema = z.object({
+  outcome: z.boolean(),
 });
 
 // =============================================================================
@@ -83,6 +121,9 @@ router.get('/players/:wallet', async (req, res) => {
         totalXp: Number(player.total_xp),
         level: player.level,
         gamesPlayed: player.games_played,
+        coins: player.coins,
+        predictionsMade: player.predictions_made,
+        predictionsWon: player.predictions_won,
         rank: 0
       }
     });
@@ -248,6 +289,596 @@ router.get('/stats', async (_req, res) => {
   } catch (error) {
     console.error('Error getting stats:', error);
     res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
+
+// =============================================================================
+// ACTIVITY FEED ENDPOINTS
+// =============================================================================
+
+// Helper to transform activity log to frontend format
+function transformActivity(activity: any) {
+  // Map backend action to frontend activityType
+  const actionToType: Record<string, string> = {
+    'PREDICTION_PLACED': 'PREDICTION',
+    'PREDICTION_WON': 'WIN',
+    'PREDICTION_LOST': 'PREDICTION',
+    'GAME_COMPLETED': 'GAME',
+    'DAILY_BONUS': 'CLAIM_BONUS',
+    'REGISTERED': 'GAME',
+  };
+  
+  // Generate description from details
+  let description = '';
+  let coinsChange = 0;
+  
+  if (activity.action === 'PREDICTION_PLACED') {
+    description = `Placed ${activity.details.amount} coins on ${activity.details.direction || activity.details.prediction} for ${activity.details.asset || activity.details.eventTitle || 'prediction'}`;
+    coinsChange = -activity.details.amount;
+  } else if (activity.action === 'PREDICTION_WON') {
+    description = `Won prediction on ${activity.details.asset || activity.details.eventTitle}! ${activity.details.direction || activity.details.prediction} was correct`;
+    coinsChange = activity.details.payout || 0;
+  } else if (activity.action === 'PREDICTION_LOST') {
+    description = `Lost prediction on ${activity.details.asset || activity.details.eventTitle}. ${activity.details.direction || activity.details.prediction} was wrong`;
+    coinsChange = 0;
+  } else if (activity.action === 'GAME_COMPLETED') {
+    description = `Played ${activity.details.gameType?.replace('_', ' ') || 'game'} and scored ${activity.details.score || 0}`;
+    coinsChange = activity.details.coinsEarned || 0;
+  } else if (activity.action === 'DAILY_BONUS') {
+    description = 'Claimed daily bonus!';
+    coinsChange = activity.details.coins || 100;
+  } else if (activity.action === 'REGISTERED') {
+    description = 'Joined Linera Arcade!';
+    coinsChange = activity.details.welcomeBonus || 100;
+  }
+  
+  return {
+    id: activity.id,
+    walletAddress: activity.wallet_address,
+    username: activity.username,
+    activityType: actionToType[activity.action] || 'GAME',
+    description,
+    coinsChange,
+    referenceId: activity.details.roundId || activity.details.eventId || null,
+    createdAt: activity.created_at.toISOString(),
+  };
+}
+
+// Primary route (frontend uses this)
+router.get('/activity', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const rawActivities = await memoryDb.getActivityFeed(limit);
+    const activities = rawActivities.map(transformActivity);
+    res.json({ activities });
+  } catch (error) {
+    console.error('Error getting activity feed:', error);
+    res.status(500).json({ error: 'Failed to get activity feed' });
+  }
+});
+
+// Alias for backward compatibility
+router.get('/activity/feed', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const rawActivities = await memoryDb.getActivityFeed(limit);
+    const activities = rawActivities.map(transformActivity);
+    res.json({ activities });
+  } catch (error) {
+    console.error('Error getting activity feed:', error);
+    res.status(500).json({ error: 'Failed to get activity feed' });
+  }
+});
+
+router.get('/activity/user/:wallet', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const rawActivities = await memoryDb.getUserActivity(req.params.wallet, limit);
+    const activities = rawActivities.map(transformActivity);
+    res.json({ activities });
+  } catch (error) {
+    console.error('Error getting user activity:', error);
+    res.status(500).json({ error: 'Failed to get user activity' });
+  }
+});
+
+// =============================================================================
+// CRYPTO PREDICTION ENDPOINTS
+// =============================================================================
+
+// Create crypto round (admin)
+router.post('/predictions/crypto/rounds', requireApiKey, async (req, res) => {
+  try {
+    const input = CreateCryptoRoundSchema.parse(req.body);
+    const round = await memoryDb.createCryptoRound(input);
+    res.status(201).json({ round });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error creating crypto round:', error);
+    res.status(500).json({ error: 'Failed to create crypto round' });
+  }
+});
+
+// Get all crypto rounds
+router.get('/predictions/crypto/rounds', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const status = req.query.status as string;
+    
+    let rawRounds;
+    if (status === 'active') {
+      rawRounds = await memoryDb.getActiveCryptoRounds();
+    } else {
+      rawRounds = await memoryDb.getAllCryptoRounds(limit);
+    }
+    
+    // Transform to frontend format with proper end_time and result fields
+    const rounds = rawRounds.map(r => ({
+      id: r.id,
+      asset: r.asset,
+      start_price: r.start_price,
+      end_price: r.end_price,
+      start_time: r.start_time.toISOString(),
+      end_time: new Date(r.start_time.getTime() + r.duration_secs * 1000).toISOString(),
+      status: r.status,
+      result: r.winning_direction, // 'UP' | 'DOWN' | null
+      total_up: r.total_up,
+      total_down: r.total_down,
+      created_at: r.created_at.toISOString(),
+    }));
+    
+    res.json({ rounds });
+  } catch (error) {
+    console.error('Error getting crypto rounds:', error);
+    res.status(500).json({ error: 'Failed to get crypto rounds' });
+  }
+});
+
+// Get specific crypto round
+router.get('/predictions/crypto/rounds/:id', async (req, res) => {
+  try {
+    const round = await memoryDb.getCryptoRound(parseInt(req.params.id));
+    if (!round) {
+      return res.status(404).json({ error: 'Round not found' });
+    }
+    res.json({ round });
+  } catch (error) {
+    console.error('Error getting crypto round:', error);
+    res.status(500).json({ error: 'Failed to get crypto round' });
+  }
+});
+
+// Place crypto prediction
+router.post('/predictions/crypto/place', requireApiKey, async (req, res) => {
+  try {
+    const input = PlaceCryptoPredictionSchema.parse(req.body);
+    const rawPrediction = await memoryDb.placeCryptoPrediction(input);
+    
+    if (!rawPrediction) {
+      return res.status(400).json({ error: 'Failed to place prediction. Check balance and round status.' });
+    }
+    
+    // Transform to frontend format
+    const prediction = {
+      id: rawPrediction.id,
+      wallet_address: rawPrediction.wallet_address,
+      prediction_type: 'CRYPTO',
+      reference_id: rawPrediction.reference_id,
+      direction_or_outcome: rawPrediction.direction_or_outcome === 1 ? 'UP' : 'DOWN',
+      coins_staked: rawPrediction.amount,
+      coins_won: null,
+      status: rawPrediction.status,
+      created_at: rawPrediction.created_at.toISOString(),
+    };
+    
+    res.status(201).json({ prediction });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error placing crypto prediction:', error);
+    res.status(500).json({ error: 'Failed to place prediction' });
+  }
+});
+
+// Resolve crypto round (admin)
+router.post('/predictions/crypto/rounds/:id/resolve', requireApiKey, async (req, res) => {
+  try {
+    const input = ResolveCryptoRoundSchema.parse(req.body);
+    const round = await memoryDb.resolveCryptoRound(parseInt(req.params.id), input.end_price);
+    
+    if (!round) {
+      return res.status(400).json({ error: 'Failed to resolve round. Round may not exist or already resolved.' });
+    }
+    
+    res.json({ round });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error resolving crypto round:', error);
+    res.status(500).json({ error: 'Failed to resolve round' });
+  }
+});
+
+// Get predictions for round
+router.get('/predictions/crypto/rounds/:id/predictions', async (req, res) => {
+  try {
+    const predictions = await memoryDb.getPredictionsForRound(parseInt(req.params.id));
+    res.json({ predictions });
+  } catch (error) {
+    console.error('Error getting round predictions:', error);
+    res.status(500).json({ error: 'Failed to get predictions' });
+  }
+});
+
+// =============================================================================
+// WORLD EVENT PREDICTION ENDPOINTS
+// =============================================================================
+
+// Create world event (admin)
+router.post('/predictions/events', requireApiKey, async (req, res) => {
+  try {
+    const input = CreateWorldEventSchema.parse(req.body);
+    const event = await memoryDb.createWorldEvent(input);
+    res.status(201).json({ event });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error creating world event:', error);
+    res.status(500).json({ error: 'Failed to create world event' });
+  }
+});
+
+// Get all world events
+router.get('/predictions/events', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const status = req.query.status as string;
+    const category = req.query.category as string;
+    
+    let events;
+    if (status === 'active') {
+      events = await memoryDb.getActiveWorldEvents();
+    } else if (category) {
+      events = await memoryDb.getWorldEventsByCategory(category);
+    } else {
+      events = await memoryDb.getAllWorldEvents(limit);
+    }
+    
+    res.json({ events });
+  } catch (error) {
+    console.error('Error getting world events:', error);
+    res.status(500).json({ error: 'Failed to get world events' });
+  }
+});
+
+// Get specific world event
+router.get('/predictions/events/:id', async (req, res) => {
+  try {
+    const event = await memoryDb.getWorldEvent(parseInt(req.params.id));
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    res.json({ event });
+  } catch (error) {
+    console.error('Error getting world event:', error);
+    res.status(500).json({ error: 'Failed to get world event' });
+  }
+});
+
+// Place event prediction
+router.post('/predictions/events/place', requireApiKey, async (req, res) => {
+  try {
+    const input = PlaceEventPredictionSchema.parse(req.body);
+    // Transform outcome string to prediction boolean (YES/true, NO/false)
+    const predictionBool = input.outcome.toUpperCase() === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
+    const prediction = await memoryDb.placeEventPrediction({
+      wallet_address: input.wallet_address,
+      event_id: input.event_id,
+      prediction: predictionBool,
+      amount: input.amount,
+    });
+    
+    if (!prediction) {
+      return res.status(400).json({ error: 'Failed to place prediction. Check balance and event status.' });
+    }
+    
+    // Transform to frontend format
+    const response = {
+      id: prediction.id,
+      wallet_address: prediction.wallet_address,
+      prediction_type: 'WORLD_EVENT',
+      reference_id: prediction.reference_id,
+      direction_or_outcome: prediction.direction_or_outcome === 1 ? 'YES' : 'NO',
+      coins_staked: prediction.amount,
+      coins_won: null,
+      status: prediction.status,
+      created_at: prediction.created_at.toISOString(),
+    };
+    
+    res.status(201).json({ prediction: response });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error placing event prediction:', error);
+    res.status(500).json({ error: 'Failed to place prediction' });
+  }
+});
+
+// Resolve world event (admin)
+router.post('/predictions/events/:id/resolve', requireApiKey, async (req, res) => {
+  try {
+    const input = ResolveWorldEventSchema.parse(req.body);
+    const event = await memoryDb.resolveWorldEvent(parseInt(req.params.id), input.outcome);
+    
+    if (!event) {
+      return res.status(400).json({ error: 'Failed to resolve event. Event may not exist or already resolved.' });
+    }
+    
+    res.json({ event });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error resolving world event:', error);
+    res.status(500).json({ error: 'Failed to resolve event' });
+  }
+});
+
+// Get predictions for event
+router.get('/predictions/events/:id/predictions', async (req, res) => {
+  try {
+    const predictions = await memoryDb.getPredictionsForEvent(parseInt(req.params.id));
+    res.json({ predictions });
+  } catch (error) {
+    console.error('Error getting event predictions:', error);
+    res.status(500).json({ error: 'Failed to get predictions' });
+  }
+});
+
+// =============================================================================
+// USER PREDICTION ENDPOINTS
+// =============================================================================
+
+// Get user's predictions
+router.get('/predictions/user/:wallet', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const rawPredictions = await memoryDb.getUserPredictions(req.params.wallet, limit);
+    
+    // Transform to frontend format
+    const predictions = rawPredictions.map(p => ({
+      id: p.id,
+      wallet_address: p.wallet_address,
+      prediction_type: p.prediction_type === 'CRYPTO' ? 'CRYPTO' : 'WORLD_EVENT',
+      reference_id: p.reference_id,
+      direction_or_outcome: p.prediction_type === 'CRYPTO' 
+        ? (p.direction_or_outcome === 1 ? 'UP' : 'DOWN')
+        : (p.direction_or_outcome === 1 ? 'YES' : 'NO'),
+      coins_staked: p.amount,
+      coins_won: p.status === 'WON' ? p.payout : (p.status === 'LOST' ? 0 : null),
+      status: p.status,
+      created_at: p.created_at.toISOString(),
+    }));
+    
+    res.json({ predictions });
+  } catch (error) {
+    console.error('Error getting user predictions:', error);
+    res.status(500).json({ error: 'Failed to get predictions' });
+  }
+});
+
+// =============================================================================
+// COIN / TOKEN ENDPOINTS
+// =============================================================================
+
+// Get user's coin balance (auto-creates player if not exists)
+router.get('/coins/balance/:wallet', async (req, res) => {
+  try {
+    let balance = await memoryDb.getCoinBalance(req.params.wallet);
+    
+    // Auto-create player if not exists
+    if (balance === null) {
+      // Create player with default values
+      await memoryDb.createPlayer({
+        wallet_address: req.params.wallet.toLowerCase(),
+        username: `Player_${req.params.wallet.slice(2, 8)}`,
+      });
+      balance = await memoryDb.getCoinBalance(req.params.wallet);
+    }
+    
+    // Get the player to check daily claim status
+    const player = await memoryDb.getPlayerByWallet(req.params.wallet);
+    const canClaimDaily = player ? !player.last_daily_claim || 
+      (new Date().getTime() - new Date(player.last_daily_claim).getTime()) / (1000 * 60 * 60) >= 24 : true;
+    
+    res.json({ 
+      balance: {
+        walletAddress: req.params.wallet.toLowerCase(),
+        balance: balance || 0,
+        lastDailyClaim: player?.last_daily_claim?.toISOString() || null,
+        canClaimDaily,
+      }
+    });
+  } catch (error) {
+    console.error('Error getting coin balance:', error);
+    res.status(500).json({ error: 'Failed to get balance' });
+  }
+});
+
+// Claim daily bonus (auto-creates player if not exists)
+router.post('/coins/daily-bonus', requireApiKey, async (req, res) => {
+  try {
+    const { wallet_address } = req.body;
+    if (!wallet_address) {
+      return res.status(400).json({ error: 'wallet_address is required' });
+    }
+    
+    // Check if player exists, create if not
+    const existingPlayer = await memoryDb.getPlayerByWallet(wallet_address);
+    if (!existingPlayer) {
+      await memoryDb.createPlayer({
+        wallet_address: wallet_address.toLowerCase(),
+        username: `Player_${wallet_address.slice(2, 8)}`,
+      });
+    }
+    
+    const result = await memoryDb.claimDailyBonus(wallet_address);
+    
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+    
+    res.json({ success: true, coins: result.coins });
+  } catch (error) {
+    console.error('Error claiming daily bonus:', error);
+    res.status(500).json({ error: 'Failed to claim daily bonus' });
+  }
+});
+
+// =============================================================================
+// PRICE FEED ENDPOINTS (BINANCE)
+// =============================================================================
+
+// Get current crypto prices
+router.get('/prices', async (_req, res) => {
+  try {
+    const prices = await binanceService.getAllPrices();
+    res.json({ 
+      prices: {
+        btc: {
+          symbol: 'BTC',
+          priceUsd: prices.btc.price / 100, // Convert cents to dollars
+          priceCents: prices.btc.price,
+          formatted: binanceService.formatPrice(prices.btc.price),
+          timestamp: prices.btc.timestamp,
+        },
+        eth: {
+          symbol: 'ETH',
+          priceUsd: prices.eth.price / 100,
+          priceCents: prices.eth.price,
+          formatted: binanceService.formatPrice(prices.eth.price),
+          timestamp: prices.eth.timestamp,
+        },
+      }
+    });
+  } catch (error) {
+    console.error('Error getting prices:', error);
+    res.status(500).json({ error: 'Failed to get prices' });
+  }
+});
+
+// Get BTC price
+router.get('/prices/btc', async (_req, res) => {
+  try {
+    const price = await binanceService.getBTCPrice();
+    res.json({ 
+      price: {
+        symbol: 'BTC',
+        priceUsd: price.price / 100,
+        priceCents: price.price,
+        formatted: binanceService.formatPrice(price.price),
+        timestamp: price.timestamp,
+      }
+    });
+  } catch (error) {
+    console.error('Error getting BTC price:', error);
+    res.status(500).json({ error: 'Failed to get BTC price' });
+  }
+});
+
+// Get ETH price
+router.get('/prices/eth', async (_req, res) => {
+  try {
+    const price = await binanceService.getETHPrice();
+    res.json({ 
+      price: {
+        symbol: 'ETH',
+        priceUsd: price.price / 100,
+        priceCents: price.price,
+        formatted: binanceService.formatPrice(price.price),
+        timestamp: price.timestamp,
+      }
+    });
+  } catch (error) {
+    console.error('Error getting ETH price:', error);
+    res.status(500).json({ error: 'Failed to get ETH price' });
+  }
+});
+
+// Auto-create a new crypto round with current price
+router.post('/predictions/crypto/rounds/auto', requireApiKey, async (req, res) => {
+  try {
+    const { asset, duration_secs } = req.body;
+    
+    if (!asset || !['BTC', 'ETH'].includes(asset)) {
+      return res.status(400).json({ error: 'asset must be BTC or ETH' });
+    }
+    
+    const duration = duration_secs || 300; // Default 5 minutes
+    
+    // Get current price from Binance
+    const priceData = await binanceService.getPrice(asset);
+    
+    // Create round with real price
+    const round = await memoryDb.createCryptoRound({
+      asset,
+      start_price: priceData.price,
+      duration_secs: duration,
+    });
+    
+    res.status(201).json({ 
+      round,
+      startPrice: {
+        cents: priceData.price,
+        formatted: binanceService.formatPrice(priceData.price),
+      }
+    });
+  } catch (error) {
+    console.error('Error creating auto crypto round:', error);
+    res.status(500).json({ error: 'Failed to create crypto round' });
+  }
+});
+
+// Auto-resolve a crypto round with current price
+router.post('/predictions/crypto/rounds/:id/auto-resolve', requireApiKey, async (req, res) => {
+  try {
+    const roundId = parseInt(req.params.id);
+    const round = await memoryDb.getCryptoRound(roundId);
+    
+    if (!round) {
+      return res.status(404).json({ error: 'Round not found' });
+    }
+    
+    if (round.status !== 'ACTIVE') {
+      return res.status(400).json({ error: 'Round is not active' });
+    }
+    
+    // Get current price from Binance
+    const priceData = await binanceService.getPrice(round.asset);
+    
+    // Resolve with real price
+    const resolvedRound = await memoryDb.resolveCryptoRound(roundId, priceData.price);
+    
+    res.json({ 
+      round: resolvedRound,
+      endPrice: {
+        cents: priceData.price,
+        formatted: binanceService.formatPrice(priceData.price),
+      },
+      priceChange: {
+        cents: priceData.price - round.start_price,
+        percentage: ((priceData.price - round.start_price) / round.start_price * 100).toFixed(4),
+      }
+    });
+  } catch (error) {
+    console.error('Error auto-resolving crypto round:', error);
+    res.status(500).json({ error: 'Failed to resolve crypto round' });
   }
 });
 

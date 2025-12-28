@@ -1,11 +1,13 @@
 import { Link, useLocation } from 'react-router-dom';
 import { DynamicWidget } from '@dynamic-labs/sdk-react-core';
 import { motion } from 'framer-motion';
-import { Gamepad2, Trophy, Home, User } from 'lucide-react';
+import { Gamepad2, Trophy, Home, User, TrendingUp, Activity } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
   { path: '/games', label: 'Games', icon: Gamepad2 },
+  { path: '/predictions', label: 'Predictions', icon: TrendingUp },
+  { path: '/activity', label: 'Activity', icon: Activity },
   { path: '/leaderboard', label: 'Leaderboard', icon: Trophy },
   { path: '/profile', label: 'Profile', icon: User },
 ];

@@ -17,6 +17,10 @@ const migrations = [
         total_xp BIGINT DEFAULT 0,
         level INTEGER DEFAULT 1,
         games_played BIGINT DEFAULT 0,
+        coins BIGINT DEFAULT 100,
+        predictions_made BIGINT DEFAULT 0,
+        predictions_won BIGINT DEFAULT 0,
+        last_daily_claim TIMESTAMP WITH TIME ZONE,
         chain_id VARCHAR(66),
         registered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -70,6 +74,86 @@ const migrations = [
       INSERT INTO stats (key, value) VALUES ('total_players', 0) ON CONFLICT (key) DO NOTHING;
       INSERT INTO stats (key, value) VALUES ('total_games_played', 0) ON CONFLICT (key) DO NOTHING;
       INSERT INTO stats (key, value) VALUES ('total_xp_earned', 0) ON CONFLICT (key) DO NOTHING;
+      INSERT INTO stats (key, value) VALUES ('total_predictions', 0) ON CONFLICT (key) DO NOTHING;
+      INSERT INTO stats (key, value) VALUES ('total_coins_wagered', 0) ON CONFLICT (key) DO NOTHING;
+    `
+  },
+  {
+    name: '005_create_crypto_rounds',
+    sql: `
+      CREATE TABLE IF NOT EXISTS crypto_rounds (
+        id SERIAL PRIMARY KEY,
+        asset VARCHAR(10) NOT NULL,
+        start_price BIGINT NOT NULL,
+        end_price BIGINT,
+        start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        duration_secs INTEGER DEFAULT 300,
+        status VARCHAR(20) DEFAULT 'ACTIVE',
+        total_up BIGINT DEFAULT 0,
+        total_down BIGINT DEFAULT 0,
+        winning_direction VARCHAR(10),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_crypto_rounds_status ON crypto_rounds(status);
+      CREATE INDEX IF NOT EXISTS idx_crypto_rounds_asset ON crypto_rounds(asset);
+    `
+  },
+  {
+    name: '006_create_predictions',
+    sql: `
+      CREATE TABLE IF NOT EXISTS predictions (
+        id SERIAL PRIMARY KEY,
+        wallet_address VARCHAR(66) NOT NULL,
+        prediction_type VARCHAR(20) NOT NULL,
+        reference_id INTEGER NOT NULL,
+        direction_or_outcome INTEGER NOT NULL,
+        amount BIGINT NOT NULL,
+        odds_at_bet INTEGER DEFAULT 19000,
+        status VARCHAR(20) DEFAULT 'PENDING',
+        payout BIGINT DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_predictions_wallet ON predictions(wallet_address);
+      CREATE INDEX IF NOT EXISTS idx_predictions_reference ON predictions(reference_id);
+      CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
+    `
+  },
+  {
+    name: '007_create_activity_logs',
+    sql: `
+      CREATE TABLE IF NOT EXISTS activity_logs (
+        id SERIAL PRIMARY KEY,
+        wallet_address VARCHAR(66) NOT NULL,
+        username VARCHAR(50),
+        action VARCHAR(50) NOT NULL,
+        details JSONB DEFAULT '{}',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_activity_wallet ON activity_logs(wallet_address);
+      CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_logs(created_at DESC);
+    `
+  },
+  {
+    name: '008_create_world_events',
+    sql: `
+      CREATE TABLE IF NOT EXISTS world_events (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        category VARCHAR(50),
+        end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+        status VARCHAR(20) DEFAULT 'ACTIVE',
+        outcome BOOLEAN,
+        total_yes BIGINT DEFAULT 0,
+        total_no BIGINT DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_events_status ON world_events(status);
+      CREATE INDEX IF NOT EXISTS idx_events_category ON world_events(category);
     `
   }
 ];

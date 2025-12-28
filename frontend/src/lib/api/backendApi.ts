@@ -228,6 +228,313 @@ export const backendApi = {
     const result = await get<{ stats: BackendStats }>('/stats');
     return result.stats;
   },
+
+  // =============================================================================
+  // PRICE FEED METHODS
+  // =============================================================================
+
+  /**
+   * Get current crypto prices (BTC, ETH)
+   */
+  async getPrices(): Promise<{ btc: CryptoPrice; eth: CryptoPrice }> {
+    const result = await get<{ prices: { btc: CryptoPrice; eth: CryptoPrice } }>('/prices');
+    return result.prices;
+  },
+
+  /**
+   * Get BTC price
+   */
+  async getBTCPrice(): Promise<CryptoPrice> {
+    const result = await get<{ price: CryptoPrice }>('/prices/btc');
+    return result.price;
+  },
+
+  /**
+   * Get ETH price
+   */
+  async getETHPrice(): Promise<CryptoPrice> {
+    const result = await get<{ price: CryptoPrice }>('/prices/eth');
+    return result.price;
+  },
+
+  // =============================================================================
+  // ACTIVITY FEED METHODS
+  // =============================================================================
+
+  /**
+   * Get recent activity feed
+   */
+  async getActivityFeed(limit: number = 50): Promise<ActivityLogEntry[]> {
+    const result = await get<{ activities: ActivityLogEntry[] }>(
+      `/activity?limit=${limit}`
+    );
+    return result.activities;
+  },
+
+  /**
+   * Get user's activity
+   */
+  async getUserActivity(wallet: string, limit: number = 50): Promise<ActivityLogEntry[]> {
+    const result = await get<{ activities: ActivityLogEntry[] }>(
+      `/activity/user/${wallet.toLowerCase()}?limit=${limit}`
+    );
+    return result.activities;
+  },
+
+  // =============================================================================
+  // CRYPTO PREDICTION METHODS
+  // =============================================================================
+
+  /**
+   * Get all crypto rounds
+   */
+  async getCryptoRounds(): Promise<CryptoRoundEntry[]> {
+    const result = await get<{ rounds: CryptoRoundEntry[] }>('/predictions/crypto/rounds');
+    return result.rounds;
+  },
+
+  /**
+   * Get active crypto rounds
+   */
+  async getActiveCryptoRounds(): Promise<CryptoRoundEntry[]> {
+    const result = await get<{ rounds: CryptoRoundEntry[] }>('/predictions/crypto/rounds/active');
+    return result.rounds;
+  },
+
+  /**
+   * Get a specific crypto round
+   */
+  async getCryptoRound(roundId: number): Promise<CryptoRoundEntry | null> {
+    try {
+      const result = await get<{ round: CryptoRoundEntry }>(
+        `/predictions/crypto/rounds/${roundId}`
+      );
+      return result.round;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Create a new crypto round with current Binance price
+   */
+  async createCryptoRound(asset: 'BTC' | 'ETH', durationSecs: number = 300): Promise<{ round: CryptoRoundEntry; startPrice: { cents: number; formatted: string } }> {
+    return post('/predictions/crypto/rounds/auto', {
+      asset,
+      duration_secs: durationSecs,
+    });
+  },
+
+  /**
+   * Place a crypto prediction
+   */
+  async placeCryptoPrediction(
+    wallet: string,
+    roundId: number,
+    direction: 'UP' | 'DOWN',
+    coinsStaked: number
+  ): Promise<{ prediction: PredictionEntry }> {
+    return post('/predictions/crypto/place', {
+      wallet_address: wallet.toLowerCase(),
+      round_id: roundId,
+      direction,
+      amount: coinsStaked,
+    });
+  },
+
+  /**
+   * Auto-resolve a crypto round with current Binance price
+   */
+  async resolveCryptoRound(roundId: number): Promise<{
+    round: CryptoRoundEntry;
+    endPrice: { cents: number; formatted: string };
+    priceChange: { cents: number; percentage: string };
+  }> {
+    return post(`/predictions/crypto/rounds/${roundId}/auto-resolve`, {});
+  },
+
+  // =============================================================================
+  // WORLD EVENT PREDICTION METHODS
+  // =============================================================================
+
+  /**
+   * Get all world events
+   */
+  async getWorldEvents(): Promise<WorldEventEntry[]> {
+    const result = await get<{ events: WorldEventEntry[] }>('/predictions/events');
+    return result.events;
+  },
+
+  /**
+   * Get active world events
+   */
+  async getActiveWorldEvents(): Promise<WorldEventEntry[]> {
+    const result = await get<{ events: WorldEventEntry[] }>('/predictions/events/active');
+    return result.events;
+  },
+
+  /**
+   * Get a specific world event
+   */
+  async getWorldEvent(eventId: number): Promise<WorldEventEntry | null> {
+    try {
+      const result = await get<{ event: WorldEventEntry }>(
+        `/predictions/events/${eventId}`
+      );
+      return result.event;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Create a new world event
+   */
+  async createWorldEvent(
+    title: string,
+    description: string,
+    category: string,
+    outcomes: string[],
+    durationSecs: number = 86400
+  ): Promise<{ event: WorldEventEntry }> {
+    return post('/predictions/events', {
+      title,
+      description,
+      category,
+      outcomes,
+      duration_secs: durationSecs,
+    });
+  },
+
+  /**
+   * Place a world event prediction
+   */
+  async placeEventPrediction(
+    wallet: string,
+    eventId: number,
+    outcome: string,
+    coinsStaked: number
+  ): Promise<{ prediction: PredictionEntry }> {
+    return post('/predictions/events/place', {
+      wallet_address: wallet.toLowerCase(),
+      event_id: eventId,
+      outcome,
+      amount: coinsStaked,
+    });
+  },
+
+  /**
+   * Resolve a world event
+   */
+  async resolveWorldEvent(eventId: number, correctOutcome: string): Promise<{ event: WorldEventEntry }> {
+    return post(`/predictions/events/${eventId}/resolve`, {
+      correct_outcome: correctOutcome,
+    });
+  },
+
+  // =============================================================================
+  // USER PREDICTION METHODS
+  // =============================================================================
+
+  /**
+   * Get user's predictions
+   */
+  async getUserPredictions(wallet: string): Promise<PredictionEntry[]> {
+    const result = await get<{ predictions: PredictionEntry[] }>(
+      `/predictions/user/${wallet.toLowerCase()}`
+    );
+    return result.predictions;
+  },
+
+  /**
+   * Get user's coin balance
+   */
+  async getCoinBalance(wallet: string): Promise<CoinBalanceEntry> {
+    const result = await get<{ balance: CoinBalanceEntry }>(
+      `/coins/balance/${wallet.toLowerCase()}`
+    );
+    return result.balance;
+  },
+
+  /**
+   * Claim daily bonus
+   */
+  async claimDailyBonus(wallet: string): Promise<{ success: boolean; coins: number }> {
+    return post('/coins/daily-bonus', {
+      wallet_address: wallet.toLowerCase(),
+    });
+  },
 };
+
+// =============================================================================
+// ADDITIONAL TYPE DEFINITIONS FOR PREDICTIONS
+// =============================================================================
+
+export interface CryptoPrice {
+  symbol: 'BTC' | 'ETH';
+  priceUsd: number;
+  priceCents: number;
+  formatted: string;
+  timestamp: number;
+}
+
+export interface ActivityLogEntry {
+  id: number;
+  walletAddress: string;
+  username: string;
+  activityType: 'PREDICTION' | 'GAME' | 'CLAIM_BONUS' | 'WIN';
+  description: string;
+  coinsChange: number;
+  referenceId: number | null;
+  createdAt: string;
+}
+
+export interface CryptoRoundEntry {
+  id: number;
+  asset: 'BTC' | 'ETH';
+  start_price: number;
+  end_price: number | null;
+  start_time: string;
+  end_time: string;
+  status: 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
+  result: 'UP' | 'DOWN' | null;
+  total_up: number;
+  total_down: number;
+  created_at: string;
+}
+
+export interface WorldEventEntry {
+  id: number;
+  title: string;
+  description: string;
+  category: string;
+  outcomes: string[];
+  correct_outcome: string | null;
+  start_time: string;
+  end_time: string;
+  status: 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
+  image_url: string | null;
+  source: string | null;
+  created_at: string;
+}
+
+export interface PredictionEntry {
+  id: number;
+  wallet_address: string;
+  prediction_type: 'CRYPTO' | 'WORLD_EVENT';
+  reference_id: number;
+  direction_or_outcome: string;
+  coins_staked: number;
+  coins_won: number | null;
+  status: 'PENDING' | 'WON' | 'LOST' | 'CANCELLED';
+  created_at: string;
+}
+
+export interface CoinBalanceEntry {
+  walletAddress: string;
+  balance: number;
+  lastDailyClaim: string | null;
+  canClaimDaily: boolean;
+}
 
 export default backendApi;

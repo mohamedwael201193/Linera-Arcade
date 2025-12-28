@@ -170,6 +170,148 @@ export const UPDATE_USERNAME = `
 `;
 
 // =============================================================================
+// PREDICTION QUERIES (NEW)
+// =============================================================================
+
+/**
+ * Get user's coin balance
+ */
+export const GET_COIN_BALANCE = `
+  query GetCoinBalance($wallet: String!) {
+    coinBalance(wallet: $wallet)
+  }
+`;
+
+/**
+ * Get all crypto rounds
+ */
+export const GET_CRYPTO_ROUNDS = `
+  query GetCryptoRounds {
+    cryptoRounds {
+      id
+      asset
+      startPrice
+      endPrice
+      startTime
+      endTime
+      status
+      result
+      totalUp
+      totalDown
+    }
+  }
+`;
+
+/**
+ * Get active crypto rounds
+ */
+export const GET_ACTIVE_CRYPTO_ROUNDS = `
+  query GetActiveCryptoRounds {
+    activeCryptoRounds {
+      id
+      asset
+      startPrice
+      endPrice
+      startTime
+      endTime
+      status
+      result
+      totalUp
+      totalDown
+    }
+  }
+`;
+
+/**
+ * Get all world events
+ */
+export const GET_WORLD_EVENTS = `
+  query GetWorldEvents {
+    worldEvents {
+      id
+      title
+      description
+      category
+      outcomes
+      correctOutcome
+      startTime
+      endTime
+      status
+    }
+  }
+`;
+
+/**
+ * Get active world events
+ */
+export const GET_ACTIVE_WORLD_EVENTS = `
+  query GetActiveWorldEvents {
+    activeWorldEvents {
+      id
+      title
+      description
+      category
+      outcomes
+      correctOutcome
+      startTime
+      endTime
+      status
+    }
+  }
+`;
+
+/**
+ * Get user's predictions
+ */
+export const GET_USER_PREDICTIONS = `
+  query GetUserPredictions($wallet: String!) {
+    userPredictions(wallet: $wallet) {
+      id
+      predictionType
+      referenceId
+      directionOrOutcome
+      coinsStaked
+      coinsWon
+      status
+      createdAt
+    }
+  }
+`;
+
+// =============================================================================
+// PREDICTION MUTATIONS (NEW)
+// =============================================================================
+
+/**
+ * Claim daily bonus (100 coins)
+ */
+export const CLAIM_DAILY_BONUS = `
+  mutation ClaimDailyBonus {
+    claimDailyBonus
+  }
+`;
+
+/**
+ * Place a crypto prediction (UP/DOWN)
+ * Note: Field names must match the Rust Operation enum: round_id, direction, amount
+ */
+export const PLACE_CRYPTO_PREDICTION = `
+  mutation PlaceCryptoPrediction($round_id: Int!, $direction: PredictionDirection!, $amount: Int!) {
+    placeCryptoPrediction(roundId: $round_id, direction: $direction, amount: $amount)
+  }
+`;
+
+/**
+ * Place a world event prediction
+ * Note: Field names must match the Rust Operation enum: event_id, outcome, amount
+ */
+export const PLACE_EVENT_PREDICTION = `
+  mutation PlaceEventPrediction($event_id: Int!, $outcome: String!, $amount: Int!) {
+    placeEventPrediction(eventId: $event_id, outcome: $outcome, amount: $amount)
+  }
+`;
+
+// =============================================================================
 // QUERY HELPERS
 // =============================================================================
 

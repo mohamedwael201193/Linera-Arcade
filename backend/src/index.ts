@@ -9,6 +9,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import apiRoutes from './routes/api.js';
+import { memoryDb } from './db/memory.js';
+import { binanceService } from './services/binance.js';
 
 // Load environment variables
 dotenv.config();
@@ -96,8 +98,50 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // START SERVER
 // =============================================================================
 
-// Start server (no mock data - only real registrations)
-app.listen(PORT, () => {
+// Start server and seed test data
+app.listen(PORT, async () => {
+  // Seed test data for development
+  await memoryDb.seed();
+  
+  // =============================================================================
+  // AUTO-RESOLUTION BACKGROUND TASK
+  // =============================================================================
+  // Check every 10 seconds for expired rounds and resolve them
+  setInterval(async () => {
+    try {
+      const activeRounds = await memoryDb.getActiveCryptoRounds();
+      const now = Date.now();
+      
+      for (const round of activeRounds) {
+        // round.start_time is already a Date object
+        const endTime = round.start_time.getTime() + (round.duration_secs * 1000);
+        
+        if (now >= endTime) {
+          console.log(`⏰ Auto-resolving round ${round.id} (${round.asset})...`);
+          try {
+            const price = await binanceService.getPrice(round.asset as 'BTC' | 'ETH');
+            const resolved = await memoryDb.resolveCryptoRound(round.id, price.price);
+            if (resolved) {
+              console.log(`✅ Round ${round.id} resolved: ${round.asset} ${resolved.winning_direction} (${round.start_price/100} → ${price.price/100})`);
+              
+              // Create a new round for the same asset
+              const newRound = await memoryDb.createCryptoRound({
+                asset: round.asset as 'BTC' | 'ETH',
+                start_price: price.price,
+                duration_secs: 300, // 5 minutes
+              });
+              console.log(`🆕 Created new round ${newRound.id} for ${newRound.asset} at $${price.price/100}`);
+            }
+          } catch (priceErr) {
+            console.error(`Failed to resolve round ${round.id}:`, priceErr);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error in auto-resolution task:', err);
+    }
+  }, 10000); // Check every 10 seconds
+  
   console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
@@ -116,6 +160,9 @@ app.listen(PORT, () => {
 ║   • POST /api/players         - Register player               ║
 ║   • POST /api/scores          - Submit score                  ║
 ║   • GET  /api/stats           - Global stats                  ║
+║   • GET  /api/prices          - Live BTC/ETH prices           ║
+║   • GET  /api/predictions/*   - Prediction markets            ║
+║   • GET  /api/activity        - Activity feed                 ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
   `);

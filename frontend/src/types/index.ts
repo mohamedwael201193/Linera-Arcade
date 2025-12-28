@@ -250,3 +250,178 @@ export function levelProgress(xp: number): number {
   const progress = ((xp - currentLevelXp) / (nextLevelXp - currentLevelXp)) * 100;
   return Math.min(100, Math.max(0, progress));
 }
+
+// =============================================================================
+// PREDICTION MARKET TYPES
+// =============================================================================
+
+// Crypto asset types for predictions
+export type CryptoAsset = 'BTC' | 'ETH';
+
+// Prediction direction for crypto
+export type PredictionDirection = 'UP' | 'DOWN';
+
+// Prediction status
+export type PredictionStatus = 'PENDING' | 'WON' | 'LOST' | 'CANCELLED';
+
+// Round status
+export type RoundStatus = 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
+
+// Event status
+export type EventStatus = 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
+
+// Crypto prediction round
+export interface CryptoRound {
+  id: number;
+  asset: CryptoAsset;
+  startPrice: number;        // Price in cents
+  endPrice: number | null;   // Price in cents when resolved
+  startTime: number;         // Unix timestamp
+  endTime: number;           // Unix timestamp
+  status: RoundStatus;
+  result: PredictionDirection | null;  // Actual result when resolved
+  totalUp: number;           // Total coins bet on UP
+  totalDown: number;         // Total coins bet on DOWN
+  createdAt?: string;
+}
+
+// World event for predictions
+export interface WorldEvent {
+  id: number;
+  title: string;
+  description: string;
+  category: string;          // 'crypto_news' | 'tech' | 'finance' | 'sports'
+  outcomes: string[];        // Possible outcomes
+  correctOutcome: string | null;
+  startTime: number;
+  endTime: number;
+  status: EventStatus;
+  imageUrl?: string;
+  source?: string;
+  createdAt?: string;
+}
+
+// User prediction
+export interface Prediction {
+  id: number;
+  walletAddress: string;
+  predictionType: 'CRYPTO' | 'WORLD_EVENT';
+  referenceId: number;       // Round ID or Event ID
+  directionOrOutcome: string; // 'UP'/'DOWN' or event outcome
+  coinsStaked: number;
+  coinsWon: number | null;
+  status: PredictionStatus;
+  createdAt: string;
+}
+
+// Activity log entry
+export interface ActivityLog {
+  id: number;
+  walletAddress: string;
+  username: string;
+  activityType: 'PREDICTION' | 'GAME' | 'CLAIM_BONUS' | 'WIN';
+  description: string;
+  coinsChange: number;
+  referenceId: number | null;
+  createdAt: string;
+}
+
+// Price data from Binance
+export interface CryptoPrice {
+  symbol: CryptoAsset;
+  priceUsd: number;
+  priceCents: number;
+  formatted: string;
+  timestamp: number;
+}
+
+// User coin balance
+export interface CoinBalance {
+  walletAddress: string;
+  balance: number;
+  lastDailyClaim: string | null;
+  canClaimDaily: boolean;
+}
+
+// Prediction stats for user
+export interface PredictionStats {
+  totalPredictions: number;
+  wins: number;
+  losses: number;
+  pending: number;
+  totalStaked: number;
+  totalWon: number;
+  winRate: number;
+}
+
+// =============================================================================
+// PREDICTION HELPER FUNCTIONS
+// =============================================================================
+
+// Format coin amount
+export function formatCoins(coins: number | null | undefined): string {
+  if (coins === null || coins === undefined) {
+    return '0';
+  }
+  if (coins >= 1000000) {
+    return `${(coins / 1000000).toFixed(1)}M`;
+  }
+  if (coins >= 1000) {
+    return `${(coins / 1000).toFixed(1)}K`;
+  }
+  return coins.toString();
+}
+
+// Format price from cents to USD
+export function formatPrice(cents: number): string {
+  return `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// Calculate time remaining
+export function getTimeRemaining(endTime: number): { minutes: number; seconds: number; total: number } {
+  const total = Math.max(0, endTime - Date.now());
+  return {
+    minutes: Math.floor((total / 1000 / 60) % 60),
+    seconds: Math.floor((total / 1000) % 60),
+    total,
+  };
+}
+
+// Check if round/event is active
+export function isActive(status: RoundStatus | EventStatus): boolean {
+  return status === 'ACTIVE';
+}
+
+// Calculate potential winnings (simplified 2x payout)
+export function calculatePotentialWinnings(stake: number): number {
+  return stake * 2;
+}
+
+// Get prediction status color
+export function getPredictionStatusColor(status: PredictionStatus): string {
+  switch (status) {
+    case 'WON': return '#00ff00';
+    case 'LOST': return '#ff0000';
+    case 'PENDING': return '#ffff00';
+    case 'CANCELLED': return '#888888';
+    default: return '#ffffff';
+  }
+}
+
+// Get asset color
+export function getAssetColor(asset: CryptoAsset): string {
+  switch (asset) {
+    case 'BTC': return '#f7931a';
+    case 'ETH': return '#627eea';
+    default: return '#ffffff';
+  }
+}
+
+// Get direction color
+export function getDirectionColor(direction: PredictionDirection): string {
+  switch (direction) {
+    case 'UP': return '#00ff00';
+    case 'DOWN': return '#ff0000';
+    default: return '#ffffff';
+  }
+}

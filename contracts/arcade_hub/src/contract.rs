@@ -6,8 +6,9 @@
 mod state;
 
 use arcade_hub::{
-    validate_username, ArcadeError, ArcadeHubAbi, ArcadeResponse, GameScore, InstantiationArgument,
-    LeaderboardEntry, Message, Operation, Player,
+    validate_username, ArcadeError, ArcadeHubAbi, ArcadeResponse, CryptoRound, GameScore,
+    InstantiationArgument, LeaderboardEntry, Message, Operation, Player, Prediction,
+    PredictionDirection, PredictionStatus, WorldEvent,
 };
 use linera_sdk::{
     linera_base_types::{AccountOwner, WithContractAbi},
@@ -50,6 +51,12 @@ impl Contract for ArcadeHubContract {
         self.state.score_counter.set(0);
         self.state.total_games_played.set(0);
         self.state.total_xp_earned.set(0);
+        // Initialize prediction counters
+        self.state.round_counter.set(0);
+        self.state.event_counter.set(0);
+        self.state.prediction_counter.set(0);
+        self.state.total_coins_wagered.set(0);
+        self.state.total_predictions.set(0);
     }
 
     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
@@ -60,6 +67,7 @@ impl Contract for ArcadeHubContract {
         };
 
         match operation {
+            // ========== EXISTING OPERATIONS ==========
             Operation::RegisterPlayer { username } => {
                 self.handle_register_player(owner, username).await
             }
@@ -73,6 +81,54 @@ impl Contract for ArcadeHubContract {
             }
             Operation::UpdateUsername { new_username } => {
                 self.handle_update_username(owner, new_username).await
+            }
+
+            // ========== TOKEN ECONOMY OPERATIONS ==========
+            Operation::ClaimDailyBonus => {
+                self.handle_claim_daily_bonus(owner).await
+            }
+
+            // ========== CRYPTO PREDICTION OPERATIONS ==========
+            Operation::CreateCryptoRound {
+                asset,
+                start_price,
+                duration_secs,
+            } => {
+                self.handle_create_crypto_round(asset, start_price, duration_secs)
+                    .await
+            }
+            Operation::PlaceCryptoPrediction {
+                round_id,
+                direction,
+                amount,
+            } => {
+                self.handle_place_crypto_prediction(owner, round_id, direction, amount)
+                    .await
+            }
+            Operation::ResolveCryptoRound { round_id, end_price } => {
+                self.handle_resolve_crypto_round(round_id, end_price).await
+            }
+
+            // ========== WORLD EVENT OPERATIONS ==========
+            Operation::CreateWorldEvent {
+                title,
+                description,
+                category,
+                end_time,
+            } => {
+                self.handle_create_world_event(title, description, category, end_time)
+                    .await
+            }
+            Operation::PlaceEventPrediction {
+                event_id,
+                prediction,
+                amount,
+            } => {
+                self.handle_place_event_prediction(owner, event_id, prediction, amount)
+                    .await
+            }
+            Operation::ResolveWorldEvent { event_id, outcome } => {
+                self.handle_resolve_world_event(event_id, outcome).await
             }
         }
     }
@@ -101,8 +157,26 @@ impl Contract for ArcadeHubContract {
                 total_xp,
                 level,
                 games_played,
+                coins,
             } => {
-                self.handle_sync_xp_update(wallet_address, total_xp, level, games_played)
+                self.handle_sync_xp_update(wallet_address, total_xp, level, games_played, coins)
+                    .await;
+            }
+            Message::SyncCryptoRound(round) => {
+                self.handle_sync_crypto_round(round).await;
+            }
+            Message::SyncWorldEvent(event) => {
+                self.handle_sync_world_event(event).await;
+            }
+            Message::SyncPrediction(prediction) => {
+                self.handle_sync_prediction(prediction).await;
+            }
+            Message::SyncPredictionResult {
+                prediction_id,
+                won,
+                payout,
+            } => {
+                self.handle_sync_prediction_result(prediction_id, won, payout)
                     .await;
             }
         }
@@ -171,10 +245,13 @@ impl ArcadeHubContract {
 
         // Calculate XP earned
         let xp_earned = game_type.calculate_xp(score, bonus_data);
+        
+        // Calculate coins earned (1 coin per 10 XP)
+        let coins_earned = xp_earned / 10;
 
         // Update player stats
         player.add_xp(xp_earned);
-        player.increment_games();
+        player.increment_games(xp_earned);
 
         // Save updated player
         self.state
@@ -227,9 +304,10 @@ impl ArcadeHubContract {
             total_xp: player.total_xp,
             level: player.level,
             games_played: player.games_played,
+            coins: player.coins,
         });
 
-        ArcadeResponse::ScoreSubmitted { xp_earned }
+        ArcadeResponse::ScoreSubmitted { xp_earned, coins_earned }
     }
 
     /// Handle username update.
@@ -331,6 +409,7 @@ impl ArcadeHubContract {
         total_xp: u64,
         level: u32,
         games_played: u64,
+        coins: u64,
     ) {
         // Update leaderboard entry if exists
         if let Ok(Some(mut entry)) = self.state.leaderboard.get(&wallet_address).await {
@@ -351,11 +430,425 @@ impl ArcadeHubContract {
                 player.total_xp = total_xp;
                 player.level = level;
                 player.games_played = games_played;
+                player.coins = coins;
                 self.state
                     .players
                     .insert(&wallet_address, player)
                     .expect("Failed to update player");
             }
+        }
+    }
+
+    // ========================================================================
+    // TOKEN ECONOMY HANDLERS
+    // ========================================================================
+
+    /// Handle daily bonus claim.
+    async fn handle_claim_daily_bonus(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        // Check if player is registered
+        let mut player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            _ => return ArcadeError::PlayerNotRegistered.into_response(),
+        };
+
+        let current_time = self.runtime.system_time().micros();
+
+        if !player.claim_daily_bonus(current_time) {
+            return ArcadeError::DailyBonusAlreadyClaimed.into_response();
+        }
+
+        // Save updated player
+        self.state
+            .players
+            .insert(&owner, player.clone())
+            .expect("Failed to update player");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncPlayer(player));
+
+        ArcadeResponse::DailyBonusClaimed { coins: 100 }
+    }
+
+    // ========================================================================
+    // CRYPTO PREDICTION HANDLERS
+    // ========================================================================
+
+    /// Handle creating a new crypto prediction round.
+    async fn handle_create_crypto_round(
+        &mut self,
+        asset: arcade_hub::CryptoAsset,
+        start_price: u64,
+        duration_secs: u64,
+    ) -> ArcadeResponse {
+        let round_id = {
+            let current = *self.state.round_counter.get();
+            self.state.round_counter.set(current + 1);
+            current
+        };
+
+        let start_time = self.runtime.system_time().micros();
+        let round = CryptoRound::new(round_id, asset, start_price, start_time, duration_secs);
+
+        self.state
+            .crypto_rounds
+            .insert(&round_id, round.clone())
+            .expect("Failed to insert crypto round");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
+
+        ArcadeResponse::CryptoRoundCreated { round_id }
+    }
+
+    /// Handle placing a crypto price prediction.
+    async fn handle_place_crypto_prediction(
+        &mut self,
+        owner: AccountOwner,
+        round_id: u64,
+        direction: PredictionDirection,
+        amount: u64,
+    ) -> ArcadeResponse {
+        // Validate bet amount
+        if amount < 10 {
+            return ArcadeError::BetTooSmall.into_response();
+        }
+        if amount > 10000 {
+            return ArcadeError::BetTooLarge.into_response();
+        }
+
+        // Check if player is registered
+        let mut player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            _ => return ArcadeError::PlayerNotRegistered.into_response(),
+        };
+
+        // Check sufficient balance
+        if !player.spend_coins(amount) {
+            return ArcadeError::InsufficientCoins.into_response();
+        }
+
+        // Check if round exists and is accepting bets
+        let mut round = match self.state.crypto_rounds.get(&round_id).await {
+            Ok(Some(r)) => r,
+            _ => return ArcadeError::CryptoRoundNotFound.into_response(),
+        };
+
+        let current_time = self.runtime.system_time().micros();
+        if !round.is_accepting_bets(current_time) {
+            // Refund coins
+            player.award_coins(amount);
+            self.state.players.insert(&owner, player).expect("Failed to refund");
+            return ArcadeError::RoundNotAcceptingBets.into_response();
+        }
+
+        // Calculate odds before updating pool
+        let odds = round.calculate_odds(direction);
+
+        // Update round totals
+        match direction {
+            PredictionDirection::Up => round.total_up = round.total_up.saturating_add(amount),
+            PredictionDirection::Down => round.total_down = round.total_down.saturating_add(amount),
+        }
+
+        // Save updated round
+        self.state
+            .crypto_rounds
+            .insert(&round_id, round.clone())
+            .expect("Failed to update round");
+
+        // Create prediction record
+        let prediction_id = {
+            let current = *self.state.prediction_counter.get();
+            self.state.prediction_counter.set(current + 1);
+            current
+        };
+
+        let prediction = Prediction::new_crypto(
+            prediction_id,
+            owner.clone(),
+            round_id,
+            direction,
+            amount,
+            odds,
+            current_time,
+        );
+
+        self.state
+            .predictions
+            .insert(&prediction_id, prediction.clone())
+            .expect("Failed to insert prediction");
+
+        // Update totals
+        let total_wagered = *self.state.total_coins_wagered.get();
+        self.state.total_coins_wagered.set(total_wagered + amount);
+
+        let total_preds = *self.state.total_predictions.get();
+        self.state.total_predictions.set(total_preds + 1);
+
+        // Save updated player
+        self.state
+            .players
+            .insert(&owner, player.clone())
+            .expect("Failed to update player");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncPrediction(prediction));
+        self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
+
+        ArcadeResponse::CryptoPredictionPlaced { prediction_id, odds }
+    }
+
+    /// Handle resolving a crypto round.
+    async fn handle_resolve_crypto_round(
+        &mut self,
+        round_id: u64,
+        end_price: u64,
+    ) -> ArcadeResponse {
+        // Get round
+        let mut round = match self.state.crypto_rounds.get(&round_id).await {
+            Ok(Some(r)) => r,
+            _ => return ArcadeError::CryptoRoundNotFound.into_response(),
+        };
+
+        if round.status == PredictionStatus::Resolved {
+            return ArcadeError::RoundAlreadyResolved.into_response();
+        }
+
+        // Determine winning direction
+        let winning_direction = if end_price > round.start_price {
+            PredictionDirection::Up
+        } else {
+            PredictionDirection::Down
+        };
+
+        // Update round
+        round.end_price = Some(end_price);
+        round.status = PredictionStatus::Resolved;
+        round.winning_direction = Some(winning_direction);
+
+        self.state
+            .crypto_rounds
+            .insert(&round_id, round.clone())
+            .expect("Failed to update round");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
+
+        ArcadeResponse::CryptoRoundResolved { winning_direction }
+    }
+
+    // ========================================================================
+    // WORLD EVENT PREDICTION HANDLERS
+    // ========================================================================
+
+    /// Handle creating a new world event.
+    async fn handle_create_world_event(
+        &mut self,
+        title: String,
+        description: String,
+        category: String,
+        end_time: u64,
+    ) -> ArcadeResponse {
+        let event_id = {
+            let current = *self.state.event_counter.get();
+            self.state.event_counter.set(current + 1);
+            current
+        };
+
+        let created_at = self.runtime.system_time().micros();
+        let event = WorldEvent::new(event_id, title, description, category, end_time, created_at);
+
+        self.state
+            .world_events
+            .insert(&event_id, event.clone())
+            .expect("Failed to insert world event");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
+
+        ArcadeResponse::WorldEventCreated { event_id }
+    }
+
+    /// Handle placing a world event prediction.
+    async fn handle_place_event_prediction(
+        &mut self,
+        owner: AccountOwner,
+        event_id: u64,
+        prediction: bool,
+        amount: u64,
+    ) -> ArcadeResponse {
+        // Validate bet amount
+        if amount < 10 {
+            return ArcadeError::BetTooSmall.into_response();
+        }
+        if amount > 10000 {
+            return ArcadeError::BetTooLarge.into_response();
+        }
+
+        // Check if player is registered
+        let mut player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            _ => return ArcadeError::PlayerNotRegistered.into_response(),
+        };
+
+        // Check sufficient balance
+        if !player.spend_coins(amount) {
+            return ArcadeError::InsufficientCoins.into_response();
+        }
+
+        // Check if event exists and is accepting bets
+        let mut event = match self.state.world_events.get(&event_id).await {
+            Ok(Some(e)) => e,
+            _ => return ArcadeError::WorldEventNotFound.into_response(),
+        };
+
+        let current_time = self.runtime.system_time().micros();
+        if !event.is_accepting_bets(current_time) {
+            // Refund coins
+            player.award_coins(amount);
+            self.state.players.insert(&owner, player).expect("Failed to refund");
+            return ArcadeError::EventNotAcceptingBets.into_response();
+        }
+
+        // Calculate odds before updating pool
+        let odds = if prediction {
+            event.calculate_yes_odds()
+        } else {
+            event.calculate_no_odds()
+        };
+
+        // Update event totals
+        if prediction {
+            event.total_yes = event.total_yes.saturating_add(amount);
+        } else {
+            event.total_no = event.total_no.saturating_add(amount);
+        }
+
+        // Save updated event
+        self.state
+            .world_events
+            .insert(&event_id, event.clone())
+            .expect("Failed to update event");
+
+        // Create prediction record
+        let prediction_id = {
+            let current = *self.state.prediction_counter.get();
+            self.state.prediction_counter.set(current + 1);
+            current
+        };
+
+        let pred = Prediction::new_event(
+            prediction_id,
+            owner.clone(),
+            event_id,
+            prediction,
+            amount,
+            odds,
+            current_time,
+        );
+
+        self.state
+            .predictions
+            .insert(&prediction_id, pred.clone())
+            .expect("Failed to insert prediction");
+
+        // Update totals
+        let total_wagered = *self.state.total_coins_wagered.get();
+        self.state.total_coins_wagered.set(total_wagered + amount);
+
+        let total_preds = *self.state.total_predictions.get();
+        self.state.total_predictions.set(total_preds + 1);
+
+        // Save updated player
+        self.state
+            .players
+            .insert(&owner, player.clone())
+            .expect("Failed to update player");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncPrediction(pred));
+        self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
+
+        ArcadeResponse::EventPredictionPlaced { prediction_id, odds }
+    }
+
+    /// Handle resolving a world event.
+    async fn handle_resolve_world_event(
+        &mut self,
+        event_id: u64,
+        outcome: bool,
+    ) -> ArcadeResponse {
+        // Get event
+        let mut event = match self.state.world_events.get(&event_id).await {
+            Ok(Some(e)) => e,
+            _ => return ArcadeError::WorldEventNotFound.into_response(),
+        };
+
+        if event.status == PredictionStatus::Resolved {
+            return ArcadeError::EventAlreadyResolved.into_response();
+        }
+
+        // Update event
+        event.outcome = Some(outcome);
+        event.status = PredictionStatus::Resolved;
+
+        self.state
+            .world_events
+            .insert(&event_id, event.clone())
+            .expect("Failed to update event");
+
+        // Sync to hub
+        self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
+
+        ArcadeResponse::WorldEventResolved { outcome }
+    }
+
+    // ========================================================================
+    // SYNC MESSAGE HANDLERS (Hub Chain Only)
+    // ========================================================================
+
+    /// Handle syncing a crypto round from another chain.
+    async fn handle_sync_crypto_round(&mut self, round: CryptoRound) {
+        let round_id = round.id;
+        self.state
+            .crypto_rounds
+            .insert(&round_id, round)
+            .expect("Failed to sync crypto round");
+    }
+
+    /// Handle syncing a world event from another chain.
+    async fn handle_sync_world_event(&mut self, event: WorldEvent) {
+        let event_id = event.id;
+        self.state
+            .world_events
+            .insert(&event_id, event)
+            .expect("Failed to sync world event");
+    }
+
+    /// Handle syncing a prediction from another chain.
+    async fn handle_sync_prediction(&mut self, prediction: Prediction) {
+        let prediction_id = prediction.id;
+        self.state
+            .predictions
+            .insert(&prediction_id, prediction)
+            .expect("Failed to sync prediction");
+
+        // Update totals
+        let total_preds = *self.state.total_predictions.get();
+        self.state.total_predictions.set(total_preds + 1);
+    }
+
+    /// Handle syncing prediction result from another chain.
+    async fn handle_sync_prediction_result(&mut self, prediction_id: u64, won: bool, payout: u64) {
+        if let Ok(Some(mut prediction)) = self.state.predictions.get(&prediction_id).await {
+            prediction.status = PredictionStatus::Resolved;
+            if won {
+                prediction.payout = payout;
+            }
+            self.state
+                .predictions
+                .insert(&prediction_id, prediction)
+                .expect("Failed to update prediction");
         }
     }
 

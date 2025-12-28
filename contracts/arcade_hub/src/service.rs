@@ -8,8 +8,8 @@ mod state;
 use std::sync::Arc;
 
 use arcade_hub::{
-    ArcadeHubAbi, ArcadeStats, GameHighScoreEntry, GameScore, GameType, LeaderboardEntry,
-    Operation, Player,
+    ArcadeHubAbi, ArcadeStats, CryptoAsset, CryptoRound, GameHighScoreEntry, GameScore, GameType,
+    LeaderboardEntry, Operation, Player, Prediction, PredictionStatus, WorldEvent,
 };
 use async_graphql::{EmptySubscription, Object, Schema};
 use linera_sdk::{
@@ -248,7 +248,246 @@ impl QueryRoot {
             total_players,
             total_games_played: *self.state.total_games_played.get(),
             total_xp_earned: *self.state.total_xp_earned.get(),
+            total_predictions: *self.state.total_predictions.get(),
+            total_coins_wagered: *self.state.total_coins_wagered.get(),
         }
+    }
+
+    // ========================================================================
+    // CRYPTO PREDICTION QUERIES
+    // ========================================================================
+
+    /// Get all crypto prediction rounds.
+    async fn crypto_rounds(&self, status: Option<PredictionStatus>) -> Vec<CryptoRound> {
+        let mut rounds = Vec::new();
+
+        self.state
+            .crypto_rounds
+            .for_each_index_value(|_, round| {
+                let round_owned = round.into_owned();
+                if status.is_none() || status == Some(round_owned.status) {
+                    rounds.push(round_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        // Sort by start time descending (most recent first)
+        rounds.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+        rounds
+    }
+
+    /// Get active crypto rounds (currently accepting bets).
+    async fn active_crypto_rounds(&self) -> Vec<CryptoRound> {
+        let mut rounds = Vec::new();
+
+        self.state
+            .crypto_rounds
+            .for_each_index_value(|_, round| {
+                let round_owned = round.into_owned();
+                if round_owned.status == PredictionStatus::Active {
+                    rounds.push(round_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        rounds.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+        rounds
+    }
+
+    /// Get a specific crypto round by ID.
+    async fn crypto_round(&self, round_id: i32) -> Option<CryptoRound> {
+        self.state
+            .crypto_rounds
+            .get(&(round_id as u64))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Get crypto rounds by asset type.
+    async fn crypto_rounds_by_asset(&self, asset: CryptoAsset) -> Vec<CryptoRound> {
+        let mut rounds = Vec::new();
+
+        self.state
+            .crypto_rounds
+            .for_each_index_value(|_, round| {
+                let round_owned = round.into_owned();
+                if round_owned.asset == asset {
+                    rounds.push(round_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        rounds.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+        rounds
+    }
+
+    // ========================================================================
+    // WORLD EVENT PREDICTION QUERIES
+    // ========================================================================
+
+    /// Get all world events.
+    async fn world_events(&self, status: Option<PredictionStatus>) -> Vec<WorldEvent> {
+        let mut events = Vec::new();
+
+        self.state
+            .world_events
+            .for_each_index_value(|_, event| {
+                let event_owned = event.into_owned();
+                if status.is_none() || status == Some(event_owned.status) {
+                    events.push(event_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        // Sort by end time ascending (soonest first)
+        events.sort_by(|a, b| a.end_time.cmp(&b.end_time));
+        events
+    }
+
+    /// Get active world events (currently accepting bets).
+    async fn active_world_events(&self) -> Vec<WorldEvent> {
+        let mut events = Vec::new();
+
+        self.state
+            .world_events
+            .for_each_index_value(|_, event| {
+                let event_owned = event.into_owned();
+                if event_owned.status == PredictionStatus::Active {
+                    events.push(event_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        events.sort_by(|a, b| a.end_time.cmp(&b.end_time));
+        events
+    }
+
+    /// Get a specific world event by ID.
+    async fn world_event(&self, event_id: i32) -> Option<WorldEvent> {
+        self.state
+            .world_events
+            .get(&(event_id as u64))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Get world events by category.
+    async fn world_events_by_category(&self, category: String) -> Vec<WorldEvent> {
+        let mut events = Vec::new();
+
+        self.state
+            .world_events
+            .for_each_index_value(|_, event| {
+                let event_owned = event.into_owned();
+                if event_owned.category == category {
+                    events.push(event_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        events.sort_by(|a, b| a.end_time.cmp(&b.end_time));
+        events
+    }
+
+    // ========================================================================
+    // USER PREDICTION QUERIES
+    // ========================================================================
+
+    /// Get all predictions for a user.
+    async fn user_predictions(&self, wallet: String) -> Vec<Prediction> {
+        let owner = match parse_account_owner(&wallet) {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
+
+        let mut predictions = Vec::new();
+
+        self.state
+            .predictions
+            .for_each_index_value(|_, pred| {
+                let pred_owned = pred.into_owned();
+                if pred_owned.user == owner {
+                    predictions.push(pred_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        // Sort by created_at descending
+        predictions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        predictions
+    }
+
+    /// Get a specific prediction by ID.
+    async fn prediction(&self, prediction_id: i32) -> Option<Prediction> {
+        self.state
+            .predictions
+            .get(&(prediction_id as u64))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Get predictions for a specific crypto round.
+    async fn predictions_for_round(&self, round_id: i32) -> Vec<Prediction> {
+        let mut predictions = Vec::new();
+
+        self.state
+            .predictions
+            .for_each_index_value(|_, pred| {
+                let pred_owned = pred.into_owned();
+                if pred_owned.prediction_type == arcade_hub::PredictionType::Crypto 
+                    && pred_owned.reference_id == round_id as u64 {
+                    predictions.push(pred_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        predictions
+    }
+
+    /// Get predictions for a specific world event.
+    async fn predictions_for_event(&self, event_id: i32) -> Vec<Prediction> {
+        let mut predictions = Vec::new();
+
+        self.state
+            .predictions
+            .for_each_index_value(|_, pred| {
+                let pred_owned = pred.into_owned();
+                if pred_owned.prediction_type == arcade_hub::PredictionType::Event
+                    && pred_owned.reference_id == event_id as u64 {
+                    predictions.push(pred_owned);
+                }
+                Ok(())
+            })
+            .await
+            .ok();
+
+        predictions
+    }
+
+    /// Get player's coin balance.
+    async fn coin_balance(&self, wallet: String) -> Option<i32> {
+        let owner = parse_account_owner(&wallet)?;
+        let player = self.state.players.get(&owner).await.ok().flatten()?;
+        Some(player.coins as i32)
     }
 }
 
