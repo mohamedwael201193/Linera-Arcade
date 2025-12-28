@@ -12,9 +12,9 @@
 import { useState, useEffect } from 'react';
 import { usePredictions } from '../hooks/usePredictions';
 import { useArcade } from '../hooks/useArcade';
-import { formatCoins, formatPrice, getAssetColor, CryptoAsset } from '../types';
+import { formatCoins, formatPrice, getAssetColor } from '../types';
 import { CryptoRoundEntry, WorldEventEntry } from '../lib/api/backendApi';
-import { TradingViewMiniChart, TradingViewTicker } from '../components/TradingViewChart';
+import { TradingViewTicker } from '../components/TradingViewChart';
 
 // Tab types
 type TabType = 'crypto' | 'events' | 'my-predictions';
@@ -87,7 +87,6 @@ export function PredictionsPage() {
   const [selectedEvent, setSelectedEvent] = useState<WorldEventEntry | null>(null);
   const [predictionAmount, setPredictionAmount] = useState(25);
   const [isPlacingPrediction, setIsPlacingPrediction] = useState(false);
-  const [chartAsset, setChartAsset] = useState<CryptoAsset>('BTC');
 
   // Auto-refresh rounds AND user predictions every 15 seconds
   useEffect(() => {
@@ -117,13 +116,6 @@ export function PredictionsPage() {
       }
     }
   }, [predictions.activeWorldEvents, selectedEvent]);
-
-  // Update chart asset when selecting a round
-  useEffect(() => {
-    if (selectedRound) {
-      setChartAsset(selectedRound.asset as CryptoAsset);
-    }
-  }, [selectedRound]);
 
   // Handle placing crypto prediction
   const handleCryptoPrediction = async (direction: 'UP' | 'DOWN') => {
@@ -258,71 +250,14 @@ export function PredictionsPage() {
     </div>
   );
 
-  // Render real-time prices
-  const renderPrices = () => (
-    <div className="grid grid-cols-2 gap-4 mb-6">
-      {/* BTC Price */}
-      <div className="bg-gradient-to-br from-orange-900/30 to-orange-800/20 rounded-xl p-4 border border-orange-500/30">
-        <div className="flex items-center gap-3">
-          <span className="text-3xl">₿</span>
-          <div>
-            <p className="text-xs text-gray-400">Bitcoin</p>
-            <p className="text-2xl font-bold text-orange-400">
-              {predictions.prices.btc ? predictions.prices.btc.formatted : 'Loading...'}
-            </p>
-          </div>
-        </div>
-      </div>
-      
-      {/* ETH Price */}
-      <div className="bg-gradient-to-br from-blue-900/30 to-blue-800/20 rounded-xl p-4 border border-blue-500/30">
-        <div className="flex items-center gap-3">
-          <span className="text-3xl">Ξ</span>
-          <div>
-            <p className="text-xs text-gray-400">Ethereum</p>
-            <p className="text-2xl font-bold text-blue-400">
-              {predictions.prices.eth ? predictions.prices.eth.formatted : 'Loading...'}
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
   // Render crypto prediction interface
   const renderCryptoTab = () => (
     <div className="space-y-6">
-      {/* TradingView Ticker */}
-      <TradingViewTicker />
-      
-      {renderPrices()}
-      
-      {/* Chart Toggle */}
-      <div className="flex gap-2 mb-4">
-        <button
-          onClick={() => setChartAsset('BTC')}
-          className={`px-4 py-2 rounded-lg font-medium transition-all ${
-            chartAsset === 'BTC'
-              ? 'bg-orange-500 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          ₿ BTC Chart
-        </button>
-        <button
-          onClick={() => setChartAsset('ETH')}
-          className={`px-4 py-2 rounded-lg font-medium transition-all ${
-            chartAsset === 'ETH'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          Ξ ETH Chart
-        </button>
-      </div>
-      
-      {/* TradingView Mini Chart */}
-      <TradingViewMiniChart asset={chartAsset} height={250} />
+      {/* Price Ticker */}
+      <TradingViewTicker 
+        btcPrice={predictions.prices.btc?.formatted || 'Loading...'}
+        ethPrice={predictions.prices.eth?.formatted || 'Loading...'}
+      />
       
       {/* Active Rounds */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

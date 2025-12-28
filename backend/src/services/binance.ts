@@ -1,8 +1,9 @@
 /**
- * Binance Price Service
+ * Crypto Price Service
  * 
- * Fetches real-time BTC and ETH prices from Binance API.
- * Used for crypto prediction round creation and resolution.
+ * Fetches real-time BTC and ETH prices from multiple APIs with fallback.
+ * Primary: CryptoCompare (reliable, no rate limits, no geo restrictions)
+ * Fallback: Binance US API
  */
 
 export interface PriceData {
@@ -16,23 +17,91 @@ export interface CryptoPrice {
   eth: PriceData;
 }
 
-const BINANCE_API_URL = 'https://api.binance.com/api/v3';
+// API URLs - using APIs that work globally
+const CRYPTOCOMPARE_API_URL = 'https://min-api.cryptocompare.com/data';
+const BINANCE_US_API_URL = 'https://api.binance.us/api/v3';
+
+// Cache to avoid rate limiting
+let priceCache: { btc: number; eth: number; timestamp: number } | null = null;
+const CACHE_TTL = 5000; // 5 seconds
 
 /**
- * Fetch current price for a symbol from Binance
+ * Fetch prices from CryptoCompare (most reliable, no geo restrictions)
  */
-async function fetchPrice(symbol: string): Promise<number> {
+async function fetchFromCryptoCompare(): Promise<{ btc: number; eth: number }> {
+  const response = await fetch(
+    `${CRYPTOCOMPARE_API_URL}/pricemulti?fsyms=BTC,ETH&tsyms=USD`
+  );
+  if (!response.ok) {
+    throw new Error(`CryptoCompare API error: ${response.status}`);
+  }
+  const data = await response.json() as { BTC?: { USD: number }; ETH?: { USD: number } };
+  
+  if (!data.BTC?.USD || !data.ETH?.USD) {
+    throw new Error('Invalid CryptoCompare response');
+  }
+  
+  return {
+    btc: Math.round(data.BTC.USD * 100),
+    eth: Math.round(data.ETH.USD * 100),
+  };
+}
+
+/**
+ * Fetch prices from Binance US (fallback)
+ */
+async function fetchFromBinanceUS(): Promise<{ btc: number; eth: number }> {
+  const [btcRes, ethRes] = await Promise.all([
+    fetch(`${BINANCE_US_API_URL}/ticker/price?symbol=BTCUSD`),
+    fetch(`${BINANCE_US_API_URL}/ticker/price?symbol=ETHUSD`),
+  ]);
+  
+  if (!btcRes.ok || !ethRes.ok) {
+    throw new Error(`Binance US API error`);
+  }
+  
+  const btcData = await btcRes.json() as { price: string };
+  const ethData = await ethRes.json() as { price: string };
+  
+  return {
+    btc: Math.round(parseFloat(btcData.price) * 100),
+    eth: Math.round(parseFloat(ethData.price) * 100),
+  };
+}
+
+/**
+ * Fetch all prices with caching and fallback
+ */
+async function fetchAllPrices(): Promise<{ btc: number; eth: number }> {
+  // Check cache first
+  if (priceCache && Date.now() - priceCache.timestamp < CACHE_TTL) {
+    return { btc: priceCache.btc, eth: priceCache.eth };
+  }
+  
+  // Try CryptoCompare first (most reliable)
   try {
-    const response = await fetch(`${BINANCE_API_URL}/ticker/price?symbol=${symbol}USDT`);
-    if (!response.ok) {
-      throw new Error(`Binance API error: ${response.status}`);
+    const prices = await fetchFromCryptoCompare();
+    priceCache = { ...prices, timestamp: Date.now() };
+    return prices;
+  } catch (ccError) {
+    console.warn('CryptoCompare failed, trying Binance US:', ccError);
+  }
+  
+  // Fallback to Binance US
+  try {
+    const prices = await fetchFromBinanceUS();
+    priceCache = { ...prices, timestamp: Date.now() };
+    return prices;
+  } catch (binanceError) {
+    console.error('Binance US also failed:', binanceError);
+    
+    // Return cached price if available (even if stale)
+    if (priceCache) {
+      console.warn('Using stale cached prices');
+      return { btc: priceCache.btc, eth: priceCache.eth };
     }
-    const data = await response.json() as { price: string };
-    // Convert to cents (multiply by 100)
-    return Math.round(parseFloat(data.price) * 100);
-  } catch (error) {
-    console.error(`Error fetching ${symbol} price:`, error);
-    throw error;
+    
+    throw new Error('All price APIs failed and no cache available');
   }
 }
 
@@ -40,10 +109,10 @@ async function fetchPrice(symbol: string): Promise<number> {
  * Get current BTC price in USD cents
  */
 export async function getBTCPrice(): Promise<PriceData> {
-  const price = await fetchPrice('BTC');
+  const prices = await fetchAllPrices();
   return {
     symbol: 'BTC',
-    price,
+    price: prices.btc,
     timestamp: new Date(),
   };
 }
@@ -52,10 +121,10 @@ export async function getBTCPrice(): Promise<PriceData> {
  * Get current ETH price in USD cents
  */
 export async function getETHPrice(): Promise<PriceData> {
-  const price = await fetchPrice('ETH');
+  const prices = await fetchAllPrices();
   return {
     symbol: 'ETH',
-    price,
+    price: prices.eth,
     timestamp: new Date(),
   };
 }
@@ -64,8 +133,11 @@ export async function getETHPrice(): Promise<PriceData> {
  * Get both BTC and ETH prices
  */
 export async function getAllPrices(): Promise<CryptoPrice> {
-  const [btc, eth] = await Promise.all([getBTCPrice(), getETHPrice()]);
-  return { btc, eth };
+  const prices = await fetchAllPrices();
+  return {
+    btc: { symbol: 'BTC', price: prices.btc, timestamp: new Date() },
+    eth: { symbol: 'ETH', price: prices.eth, timestamp: new Date() },
+  };
 }
 
 /**
@@ -76,7 +148,7 @@ export function formatPrice(priceInCents: number): string {
 }
 
 /**
- * Binance Price Service singleton
+ * Crypto Price Service singleton
  */
 export const binanceService = {
   getBTCPrice,

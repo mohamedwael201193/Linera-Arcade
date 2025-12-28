@@ -1,191 +1,78 @@
 /**
- * TradingView Chart Component
+ * TradingView Chart Components
  * 
- * Embeds real TradingView charts for BTC/ETH price visualization
- * Uses the TradingView Widget for live market data
+ * Embeds TradingView charts for BTC and ETH price visualization.
  */
 
-import { useEffect, useRef, memo } from 'react';
-import { CryptoAsset } from '../types';
+import { memo } from 'react';
 
-interface TradingViewChartProps {
-  asset: CryptoAsset;
+interface TradingViewMiniChartProps {
+  asset: 'BTC' | 'ETH';
   height?: number;
-  theme?: 'dark' | 'light';
-  interval?: string;
 }
 
-// TradingView widget script URL
-const TRADINGVIEW_SCRIPT = 'https://s3.tradingview.com/tv.js';
-
-// Symbol mapping for TradingView
-const SYMBOL_MAP: Record<CryptoAsset, string> = {
-  BTC: 'BINANCE:BTCUSDT',
-  ETH: 'BINANCE:ETHUSDT',
-};
-
-export const TradingViewChart = memo(function TradingViewChart({
-  asset,
-  height = 400,
-  theme = 'dark',
-  interval = '5',
-}: TradingViewChartProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const scriptLoadedRef = useRef(false);
-
-  useEffect(() => {
-    // Load TradingView script if not already loaded
-    const loadScript = () => {
-      return new Promise<void>((resolve, reject) => {
-        if ((window as any).TradingView) {
-          resolve();
-          return;
-        }
-
-        if (scriptLoadedRef.current) {
-          // Script is loading, wait for it
-          const checkInterval = setInterval(() => {
-            if ((window as any).TradingView) {
-              clearInterval(checkInterval);
-              resolve();
-            }
-          }, 100);
-          return;
-        }
-
-        scriptLoadedRef.current = true;
-        const script = document.createElement('script');
-        script.src = TRADINGVIEW_SCRIPT;
-        script.async = true;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('Failed to load TradingView script'));
-        document.head.appendChild(script);
-      });
-    };
-
-    const initWidget = async () => {
-      try {
-        await loadScript();
-        
-        if (!containerRef.current) return;
-        
-        // Clear previous widget
-        containerRef.current.innerHTML = '';
-        
-        // Create widget
-        new (window as any).TradingView.widget({
-          container_id: containerRef.current.id,
-          symbol: SYMBOL_MAP[asset],
-          interval: interval,
-          timezone: 'Etc/UTC',
-          theme: theme,
-          style: '1', // Candlestick
-          locale: 'en',
-          toolbar_bg: '#1a1a2e',
-          enable_publishing: false,
-          hide_top_toolbar: false,
-          hide_legend: false,
-          save_image: false,
-          height: height,
-          width: '100%',
-          hide_volume: false,
-          backgroundColor: theme === 'dark' ? 'rgba(26, 26, 46, 1)' : 'rgba(255, 255, 255, 1)',
-          gridColor: theme === 'dark' ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
-          studies: [
-            'MASimple@tv-basicstudies',
-            'RSI@tv-basicstudies',
-          ],
-          overrides: {
-            'mainSeriesProperties.candleStyle.upColor': '#00ff00',
-            'mainSeriesProperties.candleStyle.downColor': '#ff0000',
-            'mainSeriesProperties.candleStyle.borderUpColor': '#00ff00',
-            'mainSeriesProperties.candleStyle.borderDownColor': '#ff0000',
-            'mainSeriesProperties.candleStyle.wickUpColor': '#00ff00',
-            'mainSeriesProperties.candleStyle.wickDownColor': '#ff0000',
-          },
-        });
-      } catch (error) {
-        console.error('Failed to initialize TradingView widget:', error);
-      }
-    };
-
-    initWidget();
-  }, [asset, height, theme, interval]);
-
-  const containerId = `tradingview_${asset.toLowerCase()}_${Date.now()}`;
-
+/**
+ * TradingView Mini Chart using iframe embed
+ */
+export const TradingViewMiniChart = memo(function TradingViewMiniChart({ 
+  asset, 
+  height = 300 
+}: TradingViewMiniChartProps) {
+  // TradingView symbol mapping
+  const symbol = asset === 'BTC' ? 'BINANCE:BTCUSDT' : 'BINANCE:ETHUSDT';
+  
+  // TradingView widget URL with dark theme
+  const widgetUrl = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_widget&symbol=${symbol}&interval=5&hidesidetoolbar=1&symboledit=0&saveimage=0&toolbarbg=1a1a2e&studies=[]&theme=dark&style=1&timezone=exchange&withdateranges=1&showpopupbutton=0&studies_overrides={}&overrides={}&enabled_features=[]&disabled_features=[]&showpopupbutton=0&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart`;
+  
   return (
-    <div className="rounded-xl overflow-hidden border border-gray-700">
-      <div
-        id={containerId}
-        ref={containerRef}
-        style={{ height: `${height}px` }}
-        className="bg-gray-900"
+    <div 
+      className="w-full rounded-xl overflow-hidden border border-gray-700"
+      style={{ height: `${height}px`, background: '#131722' }}
+    >
+      <iframe
+        src={widgetUrl}
+        style={{ width: '100%', height: '100%', border: 'none' }}
+        allowFullScreen
+        title={`${asset} Chart`}
       />
     </div>
   );
 });
 
-// Mini chart for prediction cards
-export const TradingViewMiniChart = memo(function TradingViewMiniChart({
-  asset,
-  height = 200,
-}: {
-  asset: CryptoAsset;
-  height?: number;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
+/**
+ * Simple price ticker display (alternative to TradingView)
+ */
+interface TradingViewTickerProps {
+  btcPrice: string;
+  ethPrice: string;
+}
 
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Use mini widget embed
-    const symbol = asset === 'BTC' ? 'BTCUSD' : 'ETHUSD';
-    containerRef.current.innerHTML = `
-      <iframe
-        scrolling="no"
-        allowtransparency="true"
-        frameborder="0"
-        src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=en#%7B%22symbol%22%3A%22BINANCE%3A${symbol}T%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A${height}%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%2C%22largeChartUrl%22%3A%22%22%7D"
-        style="box-sizing: border-box; height: ${height}px; width: 100%;"
-      ></iframe>
-    `;
-  }, [asset, height]);
-
+export const TradingViewTicker = memo(function TradingViewTicker({ 
+  btcPrice, 
+  ethPrice 
+}: TradingViewTickerProps) {
   return (
-    <div
-      ref={containerRef}
-      className="rounded-lg overflow-hidden"
-      style={{ height: `${height}px` }}
-    />
+    <div className="flex gap-4">
+      <div className="flex-1 bg-gradient-to-r from-orange-900/30 to-orange-800/20 rounded-xl p-4 border border-orange-500/30">
+        <div className="flex items-center gap-2">
+          <span className="text-orange-500 text-xl">₿</span>
+          <div>
+            <p className="text-xs text-gray-400">Bitcoin</p>
+            <p className="text-xl font-bold text-orange-400">{btcPrice}</p>
+          </div>
+        </div>
+      </div>
+      <div className="flex-1 bg-gradient-to-r from-blue-900/30 to-blue-800/20 rounded-xl p-4 border border-blue-500/30">
+        <div className="flex items-center gap-2">
+          <span className="text-blue-400 text-xl">Ξ</span>
+          <div>
+            <p className="text-xs text-gray-400">Ethereum</p>
+            <p className="text-xl font-bold text-blue-400">{ethPrice}</p>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 });
 
-// Ticker tape widget showing multiple crypto prices
-export const TradingViewTicker = memo(function TradingViewTicker() {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    containerRef.current.innerHTML = `
-      <iframe
-        scrolling="no"
-        allowtransparency="true"
-        frameborder="0"
-        src="https://s.tradingview.com/embed-widget/ticker-tape/?locale=en#%7B%22symbols%22%3A%5B%7B%22proName%22%3A%22BINANCE%3ABTCUSDT%22%2C%22title%22%3A%22Bitcoin%22%7D%2C%7B%22proName%22%3A%22BINANCE%3AETHUSDT%22%2C%22title%22%3A%22Ethereum%22%7D%2C%7B%22proName%22%3A%22BINANCE%3ASOLUSDT%22%2C%22title%22%3A%22Solana%22%7D%2C%7B%22proName%22%3A%22BINANCE%3ALINAUSDT%22%2C%22title%22%3A%22LINA%22%7D%5D%2C%22showSymbolLogo%22%3Atrue%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22displayMode%22%3A%22adaptive%22%2C%22locale%22%3A%22en%22%7D"
-        style="box-sizing: border-box; height: 46px; width: 100%;"
-      ></iframe>
-    `;
-  }, []);
-
-  return (
-    <div
-      ref={containerRef}
-      className="border-b border-gray-700"
-      style={{ height: '46px' }}
-    />
-  );
-});
-
-export default TradingViewChart;
+export default TradingViewMiniChart;
