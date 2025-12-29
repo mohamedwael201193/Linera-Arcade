@@ -199,6 +199,21 @@ router.post('/scores', requireApiKey, async (req, res) => {
     });
     await memoryDb.updatePlayerXP(input.wallet_address, input.xp_earned);
     
+    // Log the game activity
+    const player = await memoryDb.getPlayerByWallet(input.wallet_address);
+    if (player) {
+      await memoryDb.logActivity(
+        input.wallet_address,
+        player.username,
+        'GAME_COMPLETED',
+        {
+          game_type: input.game_type,
+          score: input.score,
+          xp_earned: input.xp_earned,
+        }
+      );
+    }
+    
     res.status(201).json({ score });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -322,8 +337,9 @@ function transformActivity(activity: any) {
     description = `Lost prediction on ${activity.details.asset || activity.details.eventTitle}. ${activity.details.direction || activity.details.prediction} was wrong`;
     coinsChange = 0;
   } else if (activity.action === 'GAME_COMPLETED') {
-    description = `Played ${activity.details.gameType?.replace('_', ' ') || 'game'} and scored ${activity.details.score || 0}`;
-    coinsChange = activity.details.coinsEarned || 0;
+    const gameTypeName = activity.details.game_type?.replace(/_/g, ' ') || activity.details.gameType?.replace(/_/g, ' ') || 'game';
+    description = `Played ${gameTypeName} and scored ${activity.details.score || 0} (+${activity.details.xp_earned || activity.details.xpEarned || 0} XP)`;
+    coinsChange = 0; // Games give XP, not coins
   } else if (activity.action === 'DAILY_BONUS') {
     description = 'Claimed daily bonus!';
     coinsChange = activity.details.coins || 100;
@@ -677,32 +693,36 @@ router.get('/predictions/user/:wallet', async (req, res) => {
 // COIN / TOKEN ENDPOINTS
 // =============================================================================
 
-// Get user's coin balance (auto-creates player if not exists)
+// Get user's coin balance (returns null if player not registered)
 router.get('/coins/balance/:wallet', async (req, res) => {
   try {
-    let balance = await memoryDb.getCoinBalance(req.params.wallet);
+    // Check if player exists first - don't auto-create
+    const player = await memoryDb.getPlayerByWallet(req.params.wallet);
     
-    // Auto-create player if not exists
-    if (balance === null) {
-      // Create player with default values
-      await memoryDb.createPlayer({
-        wallet_address: req.params.wallet.toLowerCase(),
-        username: `Player_${req.params.wallet.slice(2, 8)}`,
+    if (!player) {
+      // Player not registered - return null balance to indicate registration needed
+      return res.json({ 
+        balance: {
+          walletAddress: req.params.wallet.toLowerCase(),
+          balance: null,
+          lastDailyClaim: null,
+          canClaimDaily: false,
+          isRegistered: false,
+        }
       });
-      balance = await memoryDb.getCoinBalance(req.params.wallet);
     }
     
-    // Get the player to check daily claim status
-    const player = await memoryDb.getPlayerByWallet(req.params.wallet);
-    const canClaimDaily = player ? !player.last_daily_claim || 
-      (new Date().getTime() - new Date(player.last_daily_claim).getTime()) / (1000 * 60 * 60) >= 24 : true;
+    const balance = player.coins || 0;
+    const canClaimDaily = !player.last_daily_claim || 
+      (new Date().getTime() - new Date(player.last_daily_claim).getTime()) / (1000 * 60 * 60) >= 24;
     
     res.json({ 
       balance: {
         walletAddress: req.params.wallet.toLowerCase(),
-        balance: balance || 0,
-        lastDailyClaim: player?.last_daily_claim?.toISOString() || null,
+        balance: balance,
+        lastDailyClaim: player.last_daily_claim?.toISOString() || null,
         canClaimDaily,
+        isRegistered: true,
       }
     });
   } catch (error) {
@@ -711,7 +731,7 @@ router.get('/coins/balance/:wallet', async (req, res) => {
   }
 });
 
-// Claim daily bonus (auto-creates player if not exists)
+// Claim daily bonus (requires registered player)
 router.post('/coins/daily-bonus', requireApiKey, async (req, res) => {
   try {
     const { wallet_address } = req.body;
@@ -719,13 +739,10 @@ router.post('/coins/daily-bonus', requireApiKey, async (req, res) => {
       return res.status(400).json({ error: 'wallet_address is required' });
     }
     
-    // Check if player exists, create if not
+    // Check if player exists - do NOT auto-create
     const existingPlayer = await memoryDb.getPlayerByWallet(wallet_address);
     if (!existingPlayer) {
-      await memoryDb.createPlayer({
-        wallet_address: wallet_address.toLowerCase(),
-        username: `Player_${wallet_address.slice(2, 8)}`,
-      });
+      return res.status(404).json({ error: 'Player not registered. Please register first.' });
     }
     
     const result = await memoryDb.claimDailyBonus(wallet_address);

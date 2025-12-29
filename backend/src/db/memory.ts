@@ -91,6 +91,168 @@ export interface ActivityLog {
   created_at: Date;
 }
 
+// =============================================================================
+// FILE PERSISTENCE
+// =============================================================================
+
+import * as fs from 'fs';
+import * as path from 'path';
+
+const DATA_FILE = path.join(process.cwd(), 'data', 'arcade-data.json');
+
+interface PersistedData {
+  players: [string, Player][];
+  scores: Score[];
+  cryptoRounds: [number, CryptoRound][];
+  worldEvents: [number, WorldEvent][];
+  predictions: Prediction[];
+  activityLogs: ActivityLog[];
+  nextIds: {
+    playerId: number;
+    scoreId: number;
+    roundId: number;
+    eventId: number;
+    predictionId: number;
+    activityId: number;
+  };
+  stats: typeof stats;
+}
+
+function ensureDataDir() {
+  const dir = path.dirname(DATA_FILE);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function saveData() {
+  try {
+    ensureDataDir();
+    const data: PersistedData = {
+      players: Array.from(players.entries()),
+      scores: scores,
+      cryptoRounds: Array.from(cryptoRounds.entries()),
+      worldEvents: Array.from(worldEvents.entries()),
+      predictions: predictions,
+      activityLogs: activityLogs,
+      nextIds: {
+        playerId: nextPlayerId,
+        scoreId: nextScoreId,
+        roundId: nextRoundId,
+        eventId: nextEventId,
+        predictionId: nextPredictionId,
+        activityId: nextActivityId,
+      },
+      stats: stats,
+    };
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    console.log(`💾 Data saved (${players.size} players, ${activityLogs.length} activities)`);
+  } catch (error) {
+    console.error('❌ Failed to save data:', error);
+  }
+}
+
+function loadData() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) {
+      console.log('📭 No saved data found, starting fresh');
+      return;
+    }
+    
+    const rawData = fs.readFileSync(DATA_FILE, 'utf-8');
+    const data: PersistedData = JSON.parse(rawData);
+    
+    // Restore players
+    players.clear();
+    for (const [key, player] of data.players) {
+      // Convert date strings back to Date objects
+      player.registered_at = new Date(player.registered_at);
+      player.updated_at = new Date(player.updated_at);
+      if (player.last_daily_claim) {
+        player.last_daily_claim = new Date(player.last_daily_claim);
+      }
+      players.set(key, player);
+    }
+    
+    // Restore scores
+    scores.length = 0;
+    for (const score of data.scores) {
+      score.submitted_at = new Date(score.submitted_at);
+      scores.push(score);
+    }
+    
+    // Restore crypto rounds
+    cryptoRounds.clear();
+    for (const [key, round] of data.cryptoRounds) {
+      round.start_time = new Date(round.start_time);
+      round.created_at = new Date(round.created_at);
+      cryptoRounds.set(key, round);
+    }
+    
+    // Restore world events
+    worldEvents.clear();
+    for (const [key, event] of data.worldEvents) {
+      event.end_time = new Date(event.end_time);
+      event.created_at = new Date(event.created_at);
+      worldEvents.set(key, event);
+    }
+    
+    // Restore predictions
+    predictions.length = 0;
+    for (const pred of data.predictions) {
+      pred.created_at = new Date(pred.created_at);
+      predictions.push(pred);
+    }
+    
+    // Restore activity logs
+    activityLogs.length = 0;
+    for (const activity of data.activityLogs) {
+      activity.created_at = new Date(activity.created_at);
+      activityLogs.push(activity);
+    }
+    
+    // Restore IDs
+    nextPlayerId = data.nextIds.playerId;
+    nextScoreId = data.nextIds.scoreId;
+    nextRoundId = data.nextIds.roundId;
+    nextEventId = data.nextIds.eventId;
+    nextPredictionId = data.nextIds.predictionId;
+    nextActivityId = data.nextIds.activityId;
+    
+    // Restore stats
+    Object.assign(stats, data.stats);
+    
+    console.log(`✅ Data loaded: ${players.size} players, ${scores.length} scores, ${activityLogs.length} activities`);
+  } catch (error) {
+    console.error('❌ Failed to load data:', error);
+  }
+}
+
+// Load data on startup
+loadData();
+
+// Auto-save every 30 seconds
+setInterval(() => {
+  saveData();
+}, 30000);
+
+// Save on process exit
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down, saving data...');
+  saveData();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Shutting down, saving data...');
+  saveData();
+  process.exit(0);
+});
+
+// =============================================================================
+// IN-MEMORY STORAGE
+// =============================================================================
+
 // In-memory storage
 const players: Map<string, Player> = new Map();
 const scores: Score[] = [];
@@ -116,7 +278,7 @@ const stats = {
 };
 
 /**
- * In-memory database implementation
+ * In-memory database implementation with file persistence
  */
 export const memoryDb = {
   // Player operations
@@ -153,6 +315,9 @@ export const memoryDb = {
     // Log activity
     await this.logActivity(wallet, player.username, 'REGISTERED', {});
     
+    // Save data to disk
+    saveData();
+    
     return player;
   },
 
@@ -172,6 +337,9 @@ export const memoryDb = {
     player.games_played++;
     player.level = Math.floor(Math.sqrt(player.total_xp / 100)) + 1;
     player.updated_at = new Date();
+    
+    // Save after XP update
+    saveData();
     
     return player;
   },
@@ -215,6 +383,9 @@ export const memoryDb = {
     scores.push(score);
     stats.total_games_played++;
     stats.total_xp_earned += input.xp_earned;
+    
+    // Save after score submission
+    saveData();
     
     return score;
   },
@@ -314,6 +485,9 @@ export const memoryDb = {
     if (activityLogs.length > 1000) {
       activityLogs.shift();
     }
+    
+    // Save after activity log
+    saveData();
   },
 
   async getActivityFeed(limit: number = 50): Promise<ActivityLog[]> {
@@ -352,6 +526,7 @@ export const memoryDb = {
     };
     
     cryptoRounds.set(round.id, round);
+    saveData();
     return round;
   },
 
@@ -707,6 +882,9 @@ export const memoryDb = {
     player.last_daily_claim = now;
     
     await this.logActivity(wallet.toLowerCase(), player.username, 'DAILY_BONUS', { coins: 100 });
+    
+    // Save after bonus claim
+    saveData();
     
     return { success: true, coins: 100 };
   },

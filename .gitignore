@@ -47,8 +47,10 @@ finalleaderboard.md
 fixdeploy.md
 DEPLOYMENT.md
 projects.md
+finaldo.md
 
 # Temporary files
 *.tmp
 *.temp
 .cache/
+backend/data/

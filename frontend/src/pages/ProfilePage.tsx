@@ -45,8 +45,8 @@ export function ProfilePage() {
 
   // Handle claim daily bonus
   const handleClaimDailyBonus = async () => {
-    // Allow claim if coinBalance is null (not loaded) or canClaimDaily is true
-    if (predictions.coinBalance !== null && !predictions.coinBalance.canClaimDaily) return;
+    // Only allow claim if player is registered and canClaimDaily is true
+    if (!predictions.coinBalance?.isRegistered || !predictions.coinBalance?.canClaimDaily) return;
     setIsClaimingBonus(true);
     setBonusMessage(null);
     try {
@@ -367,18 +367,20 @@ export function ProfilePage() {
               <div>
                 <p className="text-gray-400 text-xs">ARCADE COINS</p>
                 <p className="font-arcade text-2xl text-yellow-400">
-                  {predictions.coinBalance ? formatCoins(predictions.coinBalance.balance) : '0'}
+                  {predictions.coinBalance?.balance !== null && predictions.coinBalance?.balance !== undefined 
+                    ? formatCoins(predictions.coinBalance.balance) 
+                    : '0'}
                 </p>
               </div>
             </div>
             
             <motion.button
-              whileHover={{ scale: (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? 1.05 : 1 }}
-              whileTap={{ scale: (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? 0.95 : 1 }}
+              whileHover={{ scale: (predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily) ? 1.05 : 1 }}
+              whileTap={{ scale: (predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily) ? 0.95 : 1 }}
               onClick={handleClaimDailyBonus}
-              disabled={(predictions.coinBalance !== null && !predictions.coinBalance.canClaimDaily) || isClaimingBonus}
+              disabled={!predictions.coinBalance?.isRegistered || !predictions.coinBalance?.canClaimDaily || isClaimingBonus}
               className={`px-4 py-3 rounded-xl font-arcade text-sm flex items-center gap-2 transition-all ${
-                predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily
+                predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily
                   ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg shadow-green-500/25 animate-pulse'
                   : 'bg-gray-700 text-gray-400 cursor-not-allowed'
               }`}
@@ -388,7 +390,7 @@ export function ProfilePage() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   CLAIMING...
                 </>
-              ) : (predictions.coinBalance === null || predictions.coinBalance?.canClaimDaily) ? (
+              ) : (predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily) ? (
                 <>
                   <Gift className="w-4 h-4" />
                   CLAIM +100

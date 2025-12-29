@@ -203,23 +203,25 @@ export function PredictionsPage() {
               <div>
                 <p className="text-xs text-gray-400">Balance</p>
                 <p className="text-xl font-bold text-yellow-400">
-                  {predictions.coinBalance ? formatCoins(predictions.coinBalance.balance) : '0'}
+                  {predictions.coinBalance?.balance !== null && predictions.coinBalance?.balance !== undefined 
+                    ? formatCoins(predictions.coinBalance.balance) 
+                    : '0'}
                 </p>
               </div>
             </div>
           </div>
           
-          {/* Daily Bonus Button - Always visible */}
+          {/* Daily Bonus Button - Only visible if registered */}
           <button
             onClick={handleClaimBonus}
-            disabled={predictions.coinBalance !== null && !predictions.coinBalance.canClaimDaily}
+            disabled={!predictions.coinBalance?.isRegistered || !predictions.coinBalance?.canClaimDaily}
             className={`px-4 py-3 rounded-xl font-semibold transition-all duration-200 shadow-lg ${
-              predictions.coinBalance === null || predictions.coinBalance.canClaimDaily
+              predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily
                 ? 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white hover:shadow-green-500/25 animate-pulse'
                 : 'bg-gray-700 text-gray-400 cursor-not-allowed'
             }`}
           >
-            🎁 {predictions.coinBalance === null || predictions.coinBalance.canClaimDaily ? 'Claim Daily Bonus (+100)' : 'Bonus Claimed Today'}
+            🎁 {predictions.coinBalance?.isRegistered && predictions.coinBalance?.canClaimDaily ? 'Claim Daily Bonus (+100)' : predictions.coinBalance?.isRegistered ? 'Bonus Claimed Today' : 'Register to Claim'}
           </button>
         </div>
       )}

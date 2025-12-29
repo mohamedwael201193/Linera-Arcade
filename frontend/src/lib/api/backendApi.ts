@@ -532,9 +532,10 @@ export interface PredictionEntry {
 
 export interface CoinBalanceEntry {
   walletAddress: string;
-  balance: number;
+  balance: number | null;
   lastDailyClaim: string | null;
   canClaimDaily: boolean;
+  isRegistered: boolean;
 }
 
 export default backendApi;

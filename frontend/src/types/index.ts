@@ -338,9 +338,10 @@ export interface CryptoPrice {
 // User coin balance
 export interface CoinBalance {
   walletAddress: string;
-  balance: number;
+  balance: number | null;
   lastDailyClaim: string | null;
   canClaimDaily: boolean;
+  isRegistered: boolean;
 }
 
 // Prediction stats for user

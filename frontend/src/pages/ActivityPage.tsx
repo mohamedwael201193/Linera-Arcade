@@ -49,6 +49,9 @@ function ActivityCard({ activity }: { activity: ActivityLogEntry }) {
   const icon = ACTIVITY_ICONS[activity.activityType] || '📝';
   const colorClass = ACTIVITY_COLORS[activity.activityType] || 'text-gray-400';
   
+  // Format the activity type for display
+  const activityTypeDisplay = activity.activityType?.toLowerCase().replace(/_/g, ' ') || 'activity';
+  
   return (
     <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700 hover:border-gray-600 transition-all duration-200">
       <div className="flex items-start gap-4">
@@ -62,7 +65,7 @@ function ActivityCard({ activity }: { activity: ActivityLogEntry }) {
               {activity.username || (activity.walletAddress ? activity.walletAddress.slice(0, 8) + '...' : 'Unknown')}
             </span>
             <span className={`text-sm ${colorClass}`}>
-              {activity.activityType?.toLowerCase().replace('_', ' ') || 'activity'}
+              {activityTypeDisplay}
             </span>
           </div>
           <p className="text-sm text-gray-400 mt-1">{activity.description || ''}</p>

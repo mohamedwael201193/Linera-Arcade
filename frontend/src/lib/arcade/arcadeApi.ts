@@ -94,6 +94,7 @@ class ArcadeApiClass {
   /**
    * Get a player by wallet address
    * First tries backend, falls back to blockchain for own chain data.
+   * Auto-syncs to backend if player exists on blockchain but not on backend.
    * 
    * @param wallet - Wallet address (0x...)
    * @returns Player or null if not registered
@@ -126,7 +127,16 @@ class ArcadeApiClass {
       );
       
       if (result.player) {
-        // Return blockchain data directly - sync happens on register/score submit
+        // Auto-sync to backend if player exists on blockchain but not on backend
+        console.log('📡 Player found on blockchain but not backend, auto-syncing...');
+        try {
+          const chainId = lineraAdapter.getChainId();
+          await backendApi.registerPlayer(wallet, result.player.username, chainId || undefined);
+          console.log('✅ Player auto-synced to backend!');
+        } catch (syncErr) {
+          console.warn('⚠️ Failed to auto-sync player to backend:', syncErr);
+        }
+        
         return result.player;
       }
       
