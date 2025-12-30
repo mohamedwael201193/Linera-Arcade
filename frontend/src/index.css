@@ -3,12 +3,28 @@
 @import 'tailwindcss/utilities';
 
 :root {
+  /* New Orange/Dark Theme */
+  --accent-orange: #ff6b00;
+  --accent-orange-light: #ff8c33;
+  --accent-orange-dark: #cc5500;
+  --accent-yellow: #ffc107;
+  
+  /* Legacy neon colors (for games that use them) */
   --neon-pink: #ff00ff;
   --neon-cyan: #00ffff;
   --neon-green: #00ff00;
   --neon-yellow: #ffff00;
   --neon-orange: #ff8800;
   --neon-purple: #aa00ff;
+  
+  /* Dark backgrounds */
+  --dark-bg: #0a0a0f;
+  --dark-card: #111118;
+  --dark-card-hover: #16161f;
+  --dark-border: #1e1e2a;
+  --dark-border-light: #2a2a3a;
+  
+  /* Legacy arcade colors */
   --arcade-dark: #0a0a12;
   --arcade-darker: #050508;
 }
@@ -25,32 +41,32 @@ html {
 
 body {
   font-family: 'Orbitron', sans-serif;
-  background-color: var(--arcade-darker);
+  background-color: var(--dark-bg);
   color: #ffffff;
   min-height: 100vh;
   overflow-x: hidden;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar with orange theme */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--arcade-dark);
+  background: var(--dark-card);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, var(--neon-pink), var(--neon-cyan));
+  background: linear-gradient(180deg, var(--accent-orange), var(--accent-orange-dark));
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, var(--neon-cyan), var(--neon-pink));
+  background: linear-gradient(180deg, var(--accent-orange-light), var(--accent-orange));
 }
 
-/* Neon text effects */
+/* Neon text effects (legacy - kept for other pages) */
 .neon-text-pink {
   color: var(--neon-pink);
   text-shadow: 0 0 5px var(--neon-pink), 0 0 10px var(--neon-pink), 0 0 20px var(--neon-pink);
@@ -71,7 +87,12 @@ body {
   text-shadow: 0 0 5px var(--neon-purple), 0 0 10px var(--neon-purple), 0 0 20px var(--neon-purple);
 }
 
-/* Neon border effects */
+/* Orange accent text */
+.text-accent-orange {
+  color: var(--accent-orange);
+}
+
+/* Neon border effects (legacy) */
 .neon-border-pink {
   border-color: var(--neon-pink);
   box-shadow: 0 0 5px var(--neon-pink), inset 0 0 5px rgba(255, 0, 255, 0.1);
@@ -87,45 +108,140 @@ body {
   box-shadow: 0 0 5px var(--neon-green), inset 0 0 5px rgba(0, 255, 0, 0.1);
 }
 
-/* Gradient backgrounds */
-.gradient-arcade {
-  background: linear-gradient(135deg, rgba(255, 0, 255, 0.1), rgba(0, 255, 255, 0.1));
-}
-
-.gradient-border {
-  background: linear-gradient(90deg, var(--neon-pink), var(--neon-cyan), var(--neon-green));
-  background-size: 200% 200%;
-  animation: gradient-shift 3s ease infinite;
-}
-
-@keyframes gradient-shift {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-}
-
 /* Grid background pattern */
-.grid-bg {
+.bg-grid-pattern {
   background-image: 
-    linear-gradient(rgba(30, 30, 46, 0.3) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(30, 30, 46, 0.3) 1px, transparent 1px);
+    linear-gradient(rgba(255, 107, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 107, 0, 0.03) 1px, transparent 1px);
   background-size: 50px 50px;
 }
 
-/* Scanline effect */
-.scanlines::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.1) 2px,
-    rgba(0, 0, 0, 0.1) 4px
-  );
-  pointer-events: none;
-  z-index: 10;
+/* ============================================
+   NEW ORANGE/DARK THEME COMPONENTS
+   ============================================ */
+
+/* Primary Button - Orange */
+.btn-primary {
+  position: relative;
+  padding: 14px 36px;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #000;
+  background: linear-gradient(135deg, var(--accent-orange), var(--accent-orange-light));
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 20px rgba(255, 107, 0, 0.3);
 }
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(255, 107, 0, 0.4);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+/* Secondary Button - Dark with Orange border */
+.btn-secondary {
+  position: relative;
+  padding: 14px 36px;
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--accent-orange);
+  background: transparent;
+  border: 2px solid var(--accent-orange);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 107, 0, 0.1);
+  box-shadow: 0 0 20px rgba(255, 107, 0, 0.2);
+}
+
+/* Dark Card */
+.dark-card {
+  background: linear-gradient(135deg, var(--dark-card) 0%, var(--dark-bg) 100%);
+  border: 1px solid var(--dark-border);
+  transition: all 0.3s ease;
+}
+
+.dark-card:hover {
+  border-color: var(--dark-border-light);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* Feature Card */
+.feature-card {
+  background: linear-gradient(135deg, var(--dark-card) 0%, rgba(17, 17, 24, 0.8) 100%);
+  border: 1px solid var(--dark-border);
+  transition: all 0.3s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent-orange);
+  box-shadow: 0 10px 40px rgba(255, 107, 0, 0.1), 0 0 20px rgba(255, 107, 0, 0.05);
+}
+
+/* Game Card */
+.game-card {
+  background: linear-gradient(135deg, var(--dark-card) 0%, var(--dark-bg) 100%);
+  border: 1px solid var(--dark-border);
+  transition: all 0.3s ease;
+}
+
+.game-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--dark-border-light);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* Step Card */
+.step-card {
+  background: linear-gradient(135deg, var(--dark-card) 0%, var(--dark-bg) 100%);
+  border: 1px solid var(--dark-border);
+  transition: all 0.3s ease;
+}
+
+.step-card:hover {
+  border-color: rgba(255, 107, 0, 0.3);
+}
+
+/* Gradient Card (for highlighted sections) */
+.gradient-card {
+  background: linear-gradient(135deg, 
+    rgba(255, 107, 0, 0.08) 0%, 
+    var(--dark-card) 50%,
+    var(--dark-bg) 100%
+  );
+  border: 1px solid rgba(255, 107, 0, 0.2);
+}
+
+/* CTA Card */
+.cta-card {
+  background: linear-gradient(135deg, 
+    rgba(255, 107, 0, 0.15) 0%, 
+    var(--dark-card) 40%,
+    var(--dark-bg) 100%
+  );
+  border: 1px solid rgba(255, 107, 0, 0.3);
+  box-shadow: 0 20px 60px rgba(255, 107, 0, 0.1);
+}
+
+/* ============================================
+   LEGACY ARCADE STYLES (for other pages)
+   ============================================ */
 
 /* Card hover effects */
 .arcade-card {
@@ -136,11 +252,11 @@ body {
 
 .arcade-card:hover {
   transform: translateY(-4px);
-  border-color: var(--neon-cyan);
-  box-shadow: 0 10px 40px rgba(0, 255, 255, 0.1), 0 0 20px rgba(0, 255, 255, 0.1);
+  border-color: var(--accent-orange);
+  box-shadow: 0 10px 40px rgba(255, 107, 0, 0.1), 0 0 20px rgba(255, 107, 0, 0.1);
 }
 
-/* Button styles */
+/* Legacy neon button styles */
 .btn-neon {
   position: relative;
   padding: 12px 32px;
@@ -176,13 +292,53 @@ body {
   transform: scale(0.98);
 }
 
+/* Gradient backgrounds */
+.gradient-arcade {
+  background: linear-gradient(135deg, rgba(255, 107, 0, 0.1), rgba(255, 140, 51, 0.05));
+}
+
+.gradient-border {
+  background: linear-gradient(90deg, var(--accent-orange), var(--accent-orange-light), var(--accent-yellow));
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}
+
+@keyframes gradient-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Grid background pattern (legacy) */
+.grid-bg {
+  background-image: 
+    linear-gradient(rgba(30, 30, 46, 0.3) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 30, 46, 0.3) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+/* Scanline effect */
+.scanlines::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.1) 2px,
+    rgba(0, 0, 0, 0.1) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+
 /* Game container */
 .game-container {
   aspect-ratio: 16 / 9;
   max-height: 70vh;
-  background: var(--arcade-dark);
-  border: 2px solid var(--neon-cyan);
-  box-shadow: 0 0 20px rgba(0, 255, 255, 0.2), inset 0 0 60px rgba(0, 0, 0, 0.5);
+  background: var(--dark-bg);
+  border: 2px solid var(--accent-orange);
+  box-shadow: 0 0 20px rgba(255, 107, 0, 0.2), inset 0 0 60px rgba(0, 0, 0, 0.5);
 }
 
 /* Loading spinner */
@@ -190,7 +346,7 @@ body {
   width: 40px;
   height: 40px;
   border: 3px solid transparent;
-  border-top-color: var(--neon-cyan);
+  border-top-color: var(--accent-orange);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -215,7 +371,7 @@ body {
   color: #000;
 }
 
-/* XP bar */
+/* XP bar with orange theme */
 .xp-bar {
   height: 8px;
   background: #1e1e2e;
@@ -225,7 +381,7 @@ body {
 
 .xp-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-green));
+  background: linear-gradient(90deg, var(--accent-orange), var(--accent-yellow));
   transition: width 0.5s ease;
 }
 
@@ -241,8 +397,8 @@ body {
   left: 50%;
   transform: translateX(-50%);
   padding: 8px 12px;
-  background: var(--arcade-dark);
-  border: 1px solid var(--neon-cyan);
+  background: var(--dark-card);
+  border: 1px solid var(--accent-orange);
   border-radius: 4px;
   font-size: 12px;
   white-space: nowrap;
@@ -275,3 +431,16 @@ body {
   display: inline-block;
   font-variant-numeric: tabular-nums;
 }
+
+/* Dynamic Widget styling to match orange theme */
+.dynamic-widget-wrapper {
+  --dynamic-connect-button-background: var(--dark-card);
+  --dynamic-connect-button-color: #fff;
+  --dynamic-connect-button-border: 1px solid var(--dark-border);
+  --dynamic-connect-button-border-radius: 8px;
+}
+
+/* Additional utility classes */
+.bg-dark-bg { background-color: var(--dark-bg); }
+.bg-dark-card { background-color: var(--dark-card); }
+.border-dark-border { border-color: var(--dark-border); }

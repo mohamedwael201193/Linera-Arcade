@@ -4,7 +4,19 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Neon arcade palette
+        // New Orange/Dark Theme
+        'accent-orange': '#ff6b00',
+        'accent-orange-light': '#ff8c33',
+        'accent-orange-dark': '#cc5500',
+        
+        // Dark backgrounds
+        'dark-bg': '#0a0a0f',
+        'dark-card': '#111118',
+        'dark-card-hover': '#16161f',
+        'dark-border': '#1e1e2a',
+        'dark-border-light': '#2a2a3a',
+        
+        // Legacy neon palette (for games)
         'neon-pink': '#ff00ff',
         'neon-cyan': '#00ffff',
         'neon-green': '#00ff00',
@@ -12,7 +24,8 @@ export default {
         'neon-orange': '#ff8800',
         'neon-purple': '#aa00ff',
         'neon-blue': '#0088ff',
-        // Dark backgrounds
+        
+        // Legacy arcade colors
         'arcade-dark': '#0a0a12',
         'arcade-darker': '#050508',
         'arcade-card': '#12121a',
@@ -68,10 +81,13 @@ export default {
         'neon-cyan': '0 0 5px #00ffff, 0 0 10px #00ffff, 0 0 20px #00ffff',
         'neon-green': '0 0 5px #00ff00, 0 0 10px #00ff00, 0 0 20px #00ff00',
         'neon-purple': '0 0 5px #aa00ff, 0 0 10px #aa00ff, 0 0 20px #aa00ff',
+        'orange-glow': '0 0 20px rgba(255, 107, 0, 0.3)',
+        'orange-glow-lg': '0 0 40px rgba(255, 107, 0, 0.4)',
       },
       backgroundImage: {
-        'grid-pattern': `linear-gradient(rgba(30, 30, 46, 0.3) 1px, transparent 1px),
-                         linear-gradient(90deg, rgba(30, 30, 46, 0.3) 1px, transparent 1px)`,
+        'grid-pattern': `linear-gradient(rgba(255, 107, 0, 0.03) 1px, transparent 1px),
+                         linear-gradient(90deg, rgba(255, 107, 0, 0.03) 1px, transparent 1px)`,
+        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
       },
       backgroundSize: {
         'grid': '50px 50px',

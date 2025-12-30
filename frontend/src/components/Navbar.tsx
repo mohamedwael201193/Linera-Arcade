@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { DynamicWidget } from '@dynamic-labs/sdk-react-core';
 import { motion } from 'framer-motion';
-import { Gamepad2, Trophy, Home, User, TrendingUp, Activity } from 'lucide-react';
+import { Trophy, Home, User, TrendingUp, Activity, Gamepad2 } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
@@ -16,20 +16,25 @@ export function Navbar() {
   const location = useLocation();
 
   return (
-    <nav className="sticky top-0 z-50 backdrop-blur-md bg-arcade-darker/80 border-b border-arcade-border">
+    <nav className="sticky top-0 z-50 backdrop-blur-md bg-dark-bg/90 border-b border-dark-border">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-3 group">
             <motion.div
-              whileHover={{ scale: 1.1, rotate: 5 }}
-              className="w-10 h-10 rounded-lg bg-gradient-to-br from-neon-pink to-neon-cyan flex items-center justify-center"
+              whileHover={{ scale: 1.05 }}
+              className="relative"
             >
-              <Gamepad2 className="w-6 h-6 text-arcade-darker" />
+              <div className="absolute inset-0 bg-accent-orange/30 rounded-full blur-xl scale-75" />
+              <img 
+                src="/logo.png" 
+                alt="Linera Arcade" 
+                className="relative w-10 h-10 object-contain drop-shadow-[0_0_15px_rgba(255,107,0,0.5)]"
+              />
             </motion.div>
             <span className="font-arcade text-xl font-bold">
-              <span className="neon-text-pink">LINERA</span>
-              <span className="neon-text-cyan"> ARCADE</span>
+              <span className="text-accent-orange">LINERA</span>
+              <span className="text-white"> ARCADE</span>
             </span>
           </Link>
 
@@ -48,7 +53,7 @@ export function Navbar() {
                   <motion.div
                     className={`flex items-center gap-2 transition-colors ${
                       isActive 
-                        ? 'text-neon-cyan' 
+                        ? 'text-accent-orange' 
                         : 'text-gray-400 hover:text-white'
                     }`}
                     whileHover={{ y: -2 }}
@@ -61,8 +66,8 @@ export function Navbar() {
                   {isActive && (
                     <motion.div
                       layoutId="navbar-indicator"
-                      className="absolute bottom-0 left-2 right-2 h-0.5 bg-neon-cyan"
-                      style={{ boxShadow: '0 0 10px #00ffff' }}
+                      className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent-orange"
+                      style={{ boxShadow: '0 0 10px #ff6b00' }}
                     />
                   )}
                 </Link>
@@ -79,7 +84,7 @@ export function Navbar() {
         </div>
 
         {/* Mobile Navigation */}
-        <div className="md:hidden flex justify-around py-2 border-t border-arcade-border">
+        <div className="md:hidden flex justify-around py-2 border-t border-dark-border">
           {navItems.map(({ path, label, icon: Icon }) => {
             const isActive = location.pathname === path || 
               (path !== '/' && location.pathname.startsWith(path));
@@ -89,7 +94,7 @@ export function Navbar() {
                 key={path}
                 to={path}
                 className={`flex flex-col items-center gap-1 p-2 ${
-                  isActive ? 'text-neon-cyan' : 'text-gray-400'
+                  isActive ? 'text-accent-orange' : 'text-gray-400'
                 }`}
               >
                 <Icon className="w-5 h-5" />
