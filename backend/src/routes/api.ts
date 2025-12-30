@@ -1,15 +1,24 @@
 /**
  * API Routes for Linera Arcade Backend
- * Uses in-memory database for development, PostgreSQL for production
+ * Uses PostgreSQL for production, in-memory for development
  * Extended with Prediction Markets API
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { memoryDb } from '../db/memory.js';
+import { getDb, isUsingPostgres } from '../db/selector.js';
 import { binanceService } from '../services/binance.js';
 
 const router = Router();
+
+// Get database instance (will be initialized on first use)
+let db: any;
+async function ensureDb() {
+  if (!db) {
+    db = await getDb();
+  }
+  return db;
+}
 
 // =============================================================================
 // VALIDATION SCHEMAS
@@ -90,7 +99,7 @@ function requireApiKey(req: Request, res: Response, next: NextFunction) {
 // =============================================================================
 
 router.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), mode: 'memory' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), mode: isUsingPostgres() ? 'postgresql' : 'memory' });
 });
 
 // =============================================================================
@@ -99,7 +108,7 @@ router.get('/health', (_req, res) => {
 
 router.get('/players', async (_req, res) => {
   try {
-    const allPlayers = await memoryDb.getAllPlayers();
+    const allPlayers = await (await ensureDb()).getAllPlayers();
     res.json({ players: allPlayers });
   } catch (error) {
     console.error('Error getting players:', error);
@@ -109,7 +118,7 @@ router.get('/players', async (_req, res) => {
 
 router.get('/players/:wallet', async (req, res) => {
   try {
-    const player = await memoryDb.getPlayerByWallet(req.params.wallet);
+    const player = await (await ensureDb()).getPlayerByWallet(req.params.wallet);
     if (!player) {
       return res.status(404).json({ error: 'Player not found' });
     }
@@ -136,7 +145,7 @@ router.get('/players/:wallet', async (req, res) => {
 router.post('/players', requireApiKey, async (req, res) => {
   try {
     const input = RegisterPlayerSchema.parse(req.body);
-    const player = await memoryDb.createPlayer(input);
+    const player = await (await ensureDb()).createPlayer(input);
     res.status(201).json({ player });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -154,9 +163,9 @@ router.post('/players', requireApiKey, async (req, res) => {
 router.get('/leaderboard', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
-    const leaderboard = await memoryDb.getLeaderboard(limit);
+    const leaderboard = await (await ensureDb()).getLeaderboard(limit);
     
-    const entries = leaderboard.map(p => ({
+    const entries = leaderboard.map((p: any) => ({
       walletAddress: p.wallet_address,
       username: p.username,
       totalXp: Number(p.total_xp),
@@ -173,7 +182,7 @@ router.get('/leaderboard', async (req, res) => {
 
 router.get('/leaderboard/rank/:wallet', async (req, res) => {
   try {
-    const rank = await memoryDb.getPlayerRank(req.params.wallet);
+    const rank = await (await ensureDb()).getPlayerRank(req.params.wallet);
     res.json({ rank });
   } catch (error) {
     console.error('Error getting rank:', error);
@@ -189,7 +198,7 @@ router.post('/scores', requireApiKey, async (req, res) => {
   try {
     const input = SubmitScoreSchema.parse(req.body);
     
-    const score = await memoryDb.createScore({
+    const score = await (await ensureDb()).createScore({
       player_wallet: input.wallet_address,
       game_type: input.game_type,
       score: input.score,
@@ -197,12 +206,12 @@ router.post('/scores', requireApiKey, async (req, res) => {
       bonus_data: input.bonus_data,
       chain_id: input.chain_id,
     });
-    await memoryDb.updatePlayerXP(input.wallet_address, input.xp_earned);
+    await (await ensureDb()).updatePlayerXP(input.wallet_address, input.xp_earned);
     
     // Log the game activity
-    const player = await memoryDb.getPlayerByWallet(input.wallet_address);
+    const player = await (await ensureDb()).getPlayerByWallet(input.wallet_address);
     if (player) {
-      await memoryDb.logActivity(
+      await (await ensureDb()).logActivity(
         input.wallet_address,
         player.username,
         'GAME_COMPLETED',
@@ -227,9 +236,9 @@ router.post('/scores', requireApiKey, async (req, res) => {
 router.get('/scores/recent', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const recentScores = await memoryDb.getRecentScores(limit);
+    const recentScores = await (await ensureDb()).getRecentScores(limit);
     
-    const transformed = recentScores.map(s => ({
+    const transformed = recentScores.map((s: any) => ({
       id: s.id,
       gameType: s.game_type,
       player: s.player_wallet,
@@ -251,9 +260,9 @@ router.get('/scores/game/:gameType', async (req, res) => {
   try {
     const gameType = req.params.gameType;
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const gameScores = await memoryDb.getGameScores(gameType, limit);
+    const gameScores = await (await ensureDb()).getGameScores(gameType, limit);
     
-    const transformed = gameScores.map(s => ({
+    const transformed = gameScores.map((s: any) => ({
       id: s.id,
       gameType: s.game_type,
       player: s.player_wallet,
@@ -275,9 +284,9 @@ router.get('/scores/highscores/:gameType', async (req, res) => {
   try {
     const gameType = req.params.gameType;
     const limit = Math.min(parseInt(req.query.limit as string) || 10, 100);
-    const highScores = await memoryDb.getGameHighScores(gameType, limit);
+    const highScores = await (await ensureDb()).getGameHighScores(gameType, limit);
     
-    const transformed = highScores.map(s => ({
+    const transformed = highScores.map((s: any) => ({
       player: s.player_wallet,
       playerName: s.username,
       score: Number(s.score),
@@ -299,7 +308,7 @@ router.get('/scores/highscores/:gameType', async (req, res) => {
 
 router.get('/stats', async (_req, res) => {
   try {
-    const stats = await memoryDb.getGlobalStats();
+    const stats = await (await ensureDb()).getGlobalStats();
     res.json({ stats });
   } catch (error) {
     console.error('Error getting stats:', error);
@@ -364,7 +373,7 @@ function transformActivity(activity: any) {
 router.get('/activity', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const rawActivities = await memoryDb.getActivityFeed(limit);
+    const rawActivities = await (await ensureDb()).getActivityFeed(limit);
     const activities = rawActivities.map(transformActivity);
     res.json({ activities });
   } catch (error) {
@@ -377,7 +386,7 @@ router.get('/activity', async (req, res) => {
 router.get('/activity/feed', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const rawActivities = await memoryDb.getActivityFeed(limit);
+    const rawActivities = await (await ensureDb()).getActivityFeed(limit);
     const activities = rawActivities.map(transformActivity);
     res.json({ activities });
   } catch (error) {
@@ -389,7 +398,7 @@ router.get('/activity/feed', async (req, res) => {
 router.get('/activity/user/:wallet', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const rawActivities = await memoryDb.getUserActivity(req.params.wallet, limit);
+    const rawActivities = await (await ensureDb()).getUserActivity(req.params.wallet, limit);
     const activities = rawActivities.map(transformActivity);
     res.json({ activities });
   } catch (error) {
@@ -406,7 +415,7 @@ router.get('/activity/user/:wallet', async (req, res) => {
 router.post('/predictions/crypto/rounds', requireApiKey, async (req, res) => {
   try {
     const input = CreateCryptoRoundSchema.parse(req.body);
-    const round = await memoryDb.createCryptoRound(input);
+    const round = await (await ensureDb()).createCryptoRound(input);
     res.status(201).json({ round });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -425,13 +434,13 @@ router.get('/predictions/crypto/rounds', async (req, res) => {
     
     let rawRounds;
     if (status === 'active') {
-      rawRounds = await memoryDb.getActiveCryptoRounds();
+      rawRounds = await (await ensureDb()).getActiveCryptoRounds();
     } else {
-      rawRounds = await memoryDb.getAllCryptoRounds(limit);
+      rawRounds = await (await ensureDb()).getAllCryptoRounds(limit);
     }
     
     // Transform to frontend format with proper end_time and result fields
-    const rounds = rawRounds.map(r => ({
+    const rounds = rawRounds.map((r: any) => ({
       id: r.id,
       asset: r.asset,
       start_price: r.start_price,
@@ -455,7 +464,7 @@ router.get('/predictions/crypto/rounds', async (req, res) => {
 // Get specific crypto round
 router.get('/predictions/crypto/rounds/:id', async (req, res) => {
   try {
-    const round = await memoryDb.getCryptoRound(parseInt(req.params.id));
+    const round = await (await ensureDb()).getCryptoRound(parseInt(req.params.id));
     if (!round) {
       return res.status(404).json({ error: 'Round not found' });
     }
@@ -470,7 +479,7 @@ router.get('/predictions/crypto/rounds/:id', async (req, res) => {
 router.post('/predictions/crypto/place', requireApiKey, async (req, res) => {
   try {
     const input = PlaceCryptoPredictionSchema.parse(req.body);
-    const rawPrediction = await memoryDb.placeCryptoPrediction(input);
+    const rawPrediction = await (await ensureDb()).placeCryptoPrediction(input);
     
     if (!rawPrediction) {
       return res.status(400).json({ error: 'Failed to place prediction. Check balance and round status.' });
@@ -503,7 +512,7 @@ router.post('/predictions/crypto/place', requireApiKey, async (req, res) => {
 router.post('/predictions/crypto/rounds/:id/resolve', requireApiKey, async (req, res) => {
   try {
     const input = ResolveCryptoRoundSchema.parse(req.body);
-    const round = await memoryDb.resolveCryptoRound(parseInt(req.params.id), input.end_price);
+    const round = await (await ensureDb()).resolveCryptoRound(parseInt(req.params.id), input.end_price);
     
     if (!round) {
       return res.status(400).json({ error: 'Failed to resolve round. Round may not exist or already resolved.' });
@@ -522,7 +531,7 @@ router.post('/predictions/crypto/rounds/:id/resolve', requireApiKey, async (req,
 // Get predictions for round
 router.get('/predictions/crypto/rounds/:id/predictions', async (req, res) => {
   try {
-    const predictions = await memoryDb.getPredictionsForRound(parseInt(req.params.id));
+    const predictions = await (await ensureDb()).getPredictionsForRound(parseInt(req.params.id));
     res.json({ predictions });
   } catch (error) {
     console.error('Error getting round predictions:', error);
@@ -538,7 +547,7 @@ router.get('/predictions/crypto/rounds/:id/predictions', async (req, res) => {
 router.post('/predictions/events', requireApiKey, async (req, res) => {
   try {
     const input = CreateWorldEventSchema.parse(req.body);
-    const event = await memoryDb.createWorldEvent(input);
+    const event = await (await ensureDb()).createWorldEvent(input);
     res.status(201).json({ event });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -558,11 +567,11 @@ router.get('/predictions/events', async (req, res) => {
     
     let events;
     if (status === 'active') {
-      events = await memoryDb.getActiveWorldEvents();
+      events = await (await ensureDb()).getActiveWorldEvents();
     } else if (category) {
-      events = await memoryDb.getWorldEventsByCategory(category);
+      events = await (await ensureDb()).getWorldEventsByCategory(category);
     } else {
-      events = await memoryDb.getAllWorldEvents(limit);
+      events = await (await ensureDb()).getAllWorldEvents(limit);
     }
     
     res.json({ events });
@@ -575,7 +584,7 @@ router.get('/predictions/events', async (req, res) => {
 // Get specific world event
 router.get('/predictions/events/:id', async (req, res) => {
   try {
-    const event = await memoryDb.getWorldEvent(parseInt(req.params.id));
+    const event = await (await ensureDb()).getWorldEvent(parseInt(req.params.id));
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
@@ -592,7 +601,7 @@ router.post('/predictions/events/place', requireApiKey, async (req, res) => {
     const input = PlaceEventPredictionSchema.parse(req.body);
     // Transform outcome string to prediction boolean (YES/true, NO/false)
     const predictionBool = input.outcome.toUpperCase() === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
-    const prediction = await memoryDb.placeEventPrediction({
+    const prediction = await (await ensureDb()).placeEventPrediction({
       wallet_address: input.wallet_address,
       event_id: input.event_id,
       prediction: predictionBool,
@@ -630,7 +639,7 @@ router.post('/predictions/events/place', requireApiKey, async (req, res) => {
 router.post('/predictions/events/:id/resolve', requireApiKey, async (req, res) => {
   try {
     const input = ResolveWorldEventSchema.parse(req.body);
-    const event = await memoryDb.resolveWorldEvent(parseInt(req.params.id), input.outcome);
+    const event = await (await ensureDb()).resolveWorldEvent(parseInt(req.params.id), input.outcome);
     
     if (!event) {
       return res.status(400).json({ error: 'Failed to resolve event. Event may not exist or already resolved.' });
@@ -649,7 +658,7 @@ router.post('/predictions/events/:id/resolve', requireApiKey, async (req, res) =
 // Get predictions for event
 router.get('/predictions/events/:id/predictions', async (req, res) => {
   try {
-    const predictions = await memoryDb.getPredictionsForEvent(parseInt(req.params.id));
+    const predictions = await (await ensureDb()).getPredictionsForEvent(parseInt(req.params.id));
     res.json({ predictions });
   } catch (error) {
     console.error('Error getting event predictions:', error);
@@ -665,10 +674,10 @@ router.get('/predictions/events/:id/predictions', async (req, res) => {
 router.get('/predictions/user/:wallet', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const rawPredictions = await memoryDb.getUserPredictions(req.params.wallet, limit);
+    const rawPredictions = await (await ensureDb()).getUserPredictions(req.params.wallet, limit);
     
     // Transform to frontend format
-    const predictions = rawPredictions.map(p => ({
+    const predictions = rawPredictions.map((p: any) => ({
       id: p.id,
       wallet_address: p.wallet_address,
       prediction_type: p.prediction_type === 'CRYPTO' ? 'CRYPTO' : 'WORLD_EVENT',
@@ -697,7 +706,7 @@ router.get('/predictions/user/:wallet', async (req, res) => {
 router.get('/coins/balance/:wallet', async (req, res) => {
   try {
     // Check if player exists first - don't auto-create
-    const player = await memoryDb.getPlayerByWallet(req.params.wallet);
+    const player = await (await ensureDb()).getPlayerByWallet(req.params.wallet);
     
     if (!player) {
       // Player not registered - return null balance to indicate registration needed
@@ -740,12 +749,12 @@ router.post('/coins/daily-bonus', requireApiKey, async (req, res) => {
     }
     
     // Check if player exists - do NOT auto-create
-    const existingPlayer = await memoryDb.getPlayerByWallet(wallet_address);
+    const existingPlayer = await (await ensureDb()).getPlayerByWallet(wallet_address);
     if (!existingPlayer) {
       return res.status(404).json({ error: 'Player not registered. Please register first.' });
     }
     
-    const result = await memoryDb.claimDailyBonus(wallet_address);
+    const result = await (await ensureDb()).claimDailyBonus(wallet_address);
     
     if (!result.success) {
       return res.status(400).json({ error: result.error });
@@ -905,7 +914,7 @@ router.post('/predictions/crypto/rounds/auto', requireApiKey, async (req, res) =
     }
     
     // Create round with price
-    const round = await memoryDb.createCryptoRound({
+    const round = await (await ensureDb()).createCryptoRound({
       asset,
       start_price: priceData.price,
       duration_secs: duration,
@@ -928,7 +937,7 @@ router.post('/predictions/crypto/rounds/auto', requireApiKey, async (req, res) =
 router.post('/predictions/crypto/rounds/:id/auto-resolve', requireApiKey, async (req, res) => {
   try {
     const roundId = parseInt(req.params.id);
-    const round = await memoryDb.getCryptoRound(roundId);
+    const round = await (await ensureDb()).getCryptoRound(roundId);
     
     if (!round) {
       return res.status(404).json({ error: 'Round not found' });
@@ -950,7 +959,7 @@ router.post('/predictions/crypto/rounds/:id/auto-resolve', requireApiKey, async 
     }
     
     // Resolve with real price
-    const resolvedRound = await memoryDb.resolveCryptoRound(roundId, priceData.price);
+    const resolvedRound = await (await ensureDb()).resolveCryptoRound(roundId, priceData.price);
     
     res.json({ 
       round: resolvedRound,

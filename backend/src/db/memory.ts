@@ -228,27 +228,6 @@ function loadData() {
   }
 }
 
-// Load data on startup
-loadData();
-
-// Auto-save every 30 seconds
-setInterval(() => {
-  saveData();
-}, 30000);
-
-// Save on process exit
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down, saving data...');
-  saveData();
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  console.log('\n🛑 Shutting down, saving data...');
-  saveData();
-  process.exit(0);
-});
-
 // =============================================================================
 // IN-MEMORY STORAGE
 // =============================================================================
@@ -276,6 +255,27 @@ const stats = {
   total_predictions: 0,
   total_coins_wagered: 0,
 };
+
+// Load data on startup (AFTER variable declarations)
+loadData();
+
+// Auto-save every 30 seconds
+setInterval(() => {
+  saveData();
+}, 30000);
+
+// Save on process exit
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down, saving data...');
+  saveData();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Shutting down, saving data...');
+  saveData();
+  process.exit(0);
+});
 
 /**
  * In-memory database implementation with file persistence
