@@ -257,7 +257,7 @@ export const postgresDb = {
     return sorted.map((row: any, index: number) => ({ ...row, rank: index + 1 }));
   },
 
-  async getStats(): Promise<{
+  async getGlobalStats(): Promise<{
     totalPlayers: number;
     totalGamesPlayed: number;
     totalXpEarned: number;
