@@ -75,6 +75,18 @@ const ResolveWorldEventSchema = z.object({
   outcome: z.boolean(),
 });
 
+// Multiplayer result schema
+const SubmitMultiplayerResultSchema = z.object({
+  wallet_address: z.string().min(10).max(66),
+  game_type: z.string().min(1).max(50),
+  room_code: z.string().min(1).max(20),
+  is_winner: z.boolean(),
+  opponent_username: z.string().min(1).max(50),
+  xp_earned: z.number().int().min(0),
+  coins_earned: z.number().int().min(0),
+  chain_id: z.string().optional()
+});
+
 // =============================================================================
 // MIDDLEWARE
 // =============================================================================
@@ -303,6 +315,65 @@ router.get('/scores/highscores/:gameType', async (req, res) => {
 });
 
 // =============================================================================
+// MULTIPLAYER RESULT ENDPOINTS
+// =============================================================================
+
+// Submit multiplayer game result (syncs from blockchain)
+router.post('/multiplayer/result', async (req, res) => {
+  try {
+    const input = SubmitMultiplayerResultSchema.parse(req.body);
+    const database = await ensureDb();
+    
+    // Get player (must already exist)
+    let player = await database.getPlayerByWallet(input.wallet_address);
+    if (!player) {
+      return res.status(400).json({ error: 'Player not registered' });
+    }
+    
+    // Update player XP (this also increments games_played)
+    const updatedPlayer = await database.updatePlayerXP(input.wallet_address, input.xp_earned);
+    if (!updatedPlayer) {
+      return res.status(500).json({ error: 'Failed to update player XP' });
+    }
+    
+    // Add coins earned
+    await database.addCoins(input.wallet_address, input.coins_earned);
+    
+    // Log the multiplayer activity
+    const actionType = input.is_winner ? 'MULTIPLAYER_WIN' : 'MULTIPLAYER_LOSS';
+    await database.logActivity(
+      input.wallet_address,
+      updatedPlayer.username,
+      actionType,
+      {
+        game_type: input.game_type,
+        room_code: input.room_code,
+        opponent: input.opponent_username,
+        xp_earned: input.xp_earned,
+        coins_earned: input.coins_earned,
+        is_winner: input.is_winner,
+      }
+    );
+    
+    console.log(`🎮 Multiplayer result synced: ${updatedPlayer.username} ${input.is_winner ? 'WON' : 'LOST'} ${input.game_type} (+${input.xp_earned} XP, +${input.coins_earned} coins)`);
+    
+    res.status(201).json({ 
+      success: true,
+      xp_earned: input.xp_earned,
+      coins_earned: input.coins_earned,
+      is_winner: input.is_winner,
+      new_total_xp: updatedPlayer.total_xp,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error submitting multiplayer result:', error);
+    res.status(500).json({ error: 'Failed to submit multiplayer result' });
+  }
+});
+
+// =============================================================================
 // STATS ENDPOINT
 // =============================================================================
 
@@ -330,13 +401,23 @@ function transformActivity(activity: any) {
     'GAME_COMPLETED': 'GAME',
     'DAILY_BONUS': 'CLAIM_BONUS',
     'REGISTERED': 'GAME',
+    'MULTIPLAYER_WIN': 'WIN',
+    'MULTIPLAYER_LOSS': 'GAME',
   };
   
   // Generate description from details
   let description = '';
   let coinsChange = 0;
   
-  if (activity.action === 'PREDICTION_PLACED') {
+  if (activity.action === 'MULTIPLAYER_WIN') {
+    const gameTypeName = activity.details.game_type?.replace(/-/g, ' ').replace(/_/g, ' ') || 'multiplayer';
+    description = `🏆 Won ${gameTypeName} vs ${activity.details.opponent}! (+${activity.details.xp_earned} XP)`;
+    coinsChange = activity.details.coins_earned || 0;
+  } else if (activity.action === 'MULTIPLAYER_LOSS') {
+    const gameTypeName = activity.details.game_type?.replace(/-/g, ' ').replace(/_/g, ' ') || 'multiplayer';
+    description = `Played ${gameTypeName} vs ${activity.details.opponent} (+${activity.details.xp_earned} XP)`;
+    coinsChange = activity.details.coins_earned || 0;
+  } else if (activity.action === 'PREDICTION_PLACED') {
     description = `Placed ${activity.details.amount} coins on ${activity.details.direction || activity.details.prediction} for ${activity.details.asset || activity.details.eventTitle || 'prediction'}`;
     coinsChange = -activity.details.amount;
   } else if (activity.action === 'PREDICTION_WON') {

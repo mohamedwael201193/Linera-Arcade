@@ -7,6 +7,7 @@ import { ProfilePage } from './pages/ProfilePage';
 import { GamePlayPage } from './pages/GamePlayPage';
 import { PredictionsPage } from './pages/PredictionsPage';
 import { ActivityPage } from './pages/ActivityPage';
+import { MultiplayerPage } from './pages/MultiplayerPage';
 import { useLineraConnection } from './hooks/useLineraConnection';
 
 function App() {
@@ -37,6 +38,7 @@ function App() {
           <Route index element={<HomePage />} />
           <Route path="games" element={<GamesPage />} />
           <Route path="games/:gameId" element={<GamePlayPage />} />
+          <Route path="multiplayer" element={<MultiplayerPage />} />
           <Route path="predictions" element={<PredictionsPage />} />
           <Route path="activity" element={<ActivityPage />} />
           <Route path="leaderboard" element={<LeaderboardPage />} />

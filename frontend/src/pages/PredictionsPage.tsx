@@ -361,13 +361,13 @@ export function PredictionsPage() {
               {/* Amount Selection */}
               <div>
                 <label className="text-sm text-gray-400 block mb-2">Stake Amount</label>
-                <div className="flex gap-2 flex-wrap">
+                <div className="flex gap-2 flex-wrap items-center">
                   {PREDICTION_AMOUNTS.map((amount) => (
                     <button
                       key={amount}
                       onClick={() => setPredictionAmount(amount)}
                       className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                        predictionAmount === amount
+                        predictionAmount === amount && !document.activeElement?.classList.contains('custom-stake')
                           ? 'bg-cyan-500 text-white'
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
@@ -375,28 +375,54 @@ export function PredictionsPage() {
                       🪙 {amount}
                     </button>
                   ))}
+                  <div className="flex items-center gap-1 bg-gray-700 rounded-lg px-2">
+                    <span className="text-gray-400">🪙</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      placeholder="Custom"
+                      className="custom-stake w-20 bg-transparent text-white py-2 outline-none text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (val > 0) setPredictionAmount(val);
+                      }}
+                      onFocus={(e) => {
+                        if (e.target.value === '') {
+                          setPredictionAmount(0);
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
+                <p className="text-xs text-gray-500 mt-1">Your balance: 🪙 {predictions.coinBalance?.balance || 0}</p>
               </div>
               
               {/* UP/DOWN Buttons */}
               <div className="grid grid-cols-2 gap-4 mt-4">
                 <button
                   onClick={() => handleCryptoPrediction('UP')}
-                  disabled={isPlacingPrediction || (predictions.coinBalance?.balance || 0) < predictionAmount}
+                  disabled={isPlacingPrediction || predictionAmount < 1 || (predictions.coinBalance?.balance || 0) < predictionAmount}
                   className="py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-700 rounded-xl text-white font-bold text-lg transition-all duration-200 flex items-center justify-center gap-2"
                 >
                   <span>📈</span> UP
                 </button>
                 <button
                   onClick={() => handleCryptoPrediction('DOWN')}
-                  disabled={isPlacingPrediction || (predictions.coinBalance?.balance || 0) < predictionAmount}
+                  disabled={isPlacingPrediction || predictionAmount < 1 || (predictions.coinBalance?.balance || 0) < predictionAmount}
                   className="py-4 bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 disabled:from-gray-600 disabled:to-gray-700 rounded-xl text-white font-bold text-lg transition-all duration-200 flex items-center justify-center gap-2"
                 >
                   <span>📉</span> DOWN
                 </button>
               </div>
               
-              {(predictions.coinBalance?.balance || 0) < predictionAmount && (
+              {predictionAmount < 1 && (
+                <p className="text-center text-sm text-yellow-400">
+                  Enter a valid stake amount (minimum 1 coin)
+                </p>
+              )}
+              
+              {predictionAmount >= 1 && (predictions.coinBalance?.balance || 0) < predictionAmount && (
                 <p className="text-center text-sm text-red-400">
                   Insufficient balance. Play games to earn more coins!
                 </p>
@@ -545,13 +571,13 @@ export function PredictionsPage() {
               {/* Amount Selection */}
               <div>
                 <label className="text-sm text-gray-400 block mb-2">Stake Amount</label>
-                <div className="flex gap-2 flex-wrap">
+                <div className="flex gap-2 flex-wrap items-center">
                   {PREDICTION_AMOUNTS.map((amount) => (
                     <button
                       key={amount}
                       onClick={() => setPredictionAmount(amount)}
                       className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                        predictionAmount === amount
+                        predictionAmount === amount && !document.activeElement?.classList.contains('custom-stake')
                           ? 'bg-purple-500 text-white'
                           : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                       }`}
@@ -559,7 +585,27 @@ export function PredictionsPage() {
                       🪙 {amount}
                     </button>
                   ))}
+                  <div className="flex items-center gap-1 bg-gray-700 rounded-lg px-2">
+                    <span className="text-gray-400">🪙</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      placeholder="Custom"
+                      className="custom-stake w-20 bg-transparent text-white py-2 outline-none text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (val > 0) setPredictionAmount(val);
+                      }}
+                      onFocus={(e) => {
+                        if (e.target.value === '') {
+                          setPredictionAmount(0);
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
+                <p className="text-xs text-gray-500 mt-1">Your balance: 🪙 {predictions.coinBalance?.balance || 0}</p>
               </div>
               
               {/* Outcome Buttons */}

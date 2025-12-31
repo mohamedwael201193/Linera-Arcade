@@ -24,7 +24,6 @@ use self::state::ArcadeHubState;
 /// The Arcade Hub service for GraphQL queries.
 #[derive(Clone)]
 pub struct ArcadeHubService {
-    state: Arc<ArcadeHubState>,
     runtime: Arc<ServiceRuntime<Self>>,
 }
 
@@ -38,19 +37,20 @@ impl Service for ArcadeHubService {
     type Parameters = ();
 
     async fn new(runtime: ServiceRuntime<Self>) -> Self {
-        let state = ArcadeHubState::load(runtime.root_view_storage_context())
-            .await
-            .expect("Failed to load state");
         ArcadeHubService {
-            state: Arc::new(state),
             runtime: Arc::new(runtime),
         }
     }
 
     async fn handle_query(&self, request: Self::Query) -> Self::QueryResponse {
+        // Load fresh state for each query to ensure we see latest updates
+        let state = ArcadeHubState::load(self.runtime.root_view_storage_context())
+            .await
+            .expect("Failed to load state");
+        
         let schema = Schema::build(
             QueryRoot {
-                state: self.state.clone(),
+                state: Arc::new(state),
             },
             Operation::mutation_root(self.runtime.clone()),
             EmptySubscription,

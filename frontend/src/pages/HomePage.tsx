@@ -77,7 +77,8 @@ export function HomePage() {
           <p className="text-gray-400 text-lg md:text-xl max-w-3xl mx-auto mb-10 leading-relaxed">
             The ultimate <span className="text-accent-orange font-semibold">on-chain gaming</span> and{' '}
             <span className="text-accent-orange font-semibold">prediction</span> platform. 
-            Play 8 arcade games, predict crypto prices, earn XP, and compete globally — 
+            Play 8 arcade games, challenge friends in <span className="text-accent-orange font-semibold">multiplayer battles</span>, 
+            predict crypto prices, earn XP, and compete globally — 
             all powered by <span className="text-white">Linera microchains</span>.
           </p>
 
@@ -92,6 +93,19 @@ export function HomePage() {
                 <span className="flex items-center gap-2">
                   <Gamepad2 className="w-5 h-5" />
                   PLAY GAMES
+                  <ArrowRight className="w-4 h-4" />
+                </span>
+              </motion.button>
+            </Link>
+            <Link to="/multiplayer">
+              <motion.button
+                whileHover={{ scale: 1.05, boxShadow: '0 0 30px rgba(255, 107, 0, 0.3)' }}
+                whileTap={{ scale: 0.95 }}
+                className="btn-primary"
+              >
+                <span className="flex items-center gap-2">
+                  <Users className="w-5 h-5" />
+                  MULTIPLAYER
                   <ArrowRight className="w-4 h-4" />
                 </span>
               </motion.button>
@@ -148,7 +162,7 @@ export function HomePage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
           <FeatureCard
             icon={Gamepad2}
             title="8 Mini Games"
@@ -157,11 +171,18 @@ export function HomePage() {
             delay={0}
           />
           <FeatureCard
+            icon={Users}
+            title="Multiplayer"
+            description="Chess, Checkers, Connect Four, Rock Paper Scissors & more with friends!"
+            link="/multiplayer"
+            delay={0.1}
+          />
+          <FeatureCard
             icon={TrendingUp}
             title="Crypto Predictions"
             description="Predict BTC & ETH prices. Real-time data, auto-resolved rounds"
             link="/predictions"
-            delay={0.1}
+            delay={0.15}
           />
           <FeatureCard
             icon={Activity}
@@ -172,10 +193,10 @@ export function HomePage() {
           />
           <FeatureCard
             icon={Trophy}
-            title="Global Leaderboard"
+            title="Leaderboard"
             description="Compete for the top spot. Earn XP and climb the ranks"
             link="/leaderboard"
-            delay={0.3}
+            delay={0.25}
           />
         </div>
       </section>

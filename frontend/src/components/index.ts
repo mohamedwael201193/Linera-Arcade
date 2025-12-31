@@ -5,3 +5,4 @@ export { GameCard, GameGrid } from './GameCard';
 export { LeaderboardTable } from './LeaderboardTable';
 export { PlayerStats } from './PlayerStats';
 export { TradingViewMiniChart, TradingViewTicker } from './TradingViewChart';
+export { BlockchainResultSubmit } from './BlockchainResultSubmit';

@@ -160,6 +160,17 @@ export const SUBMIT_SCORE = `
 `;
 
 /**
+ * Submit a multiplayer game result
+ * The Operation enum in the contract: SubmitMultiplayerResult { game_type, room_code, is_winner, opponent_username }
+ * HYBRID SYSTEM: Games play via WebSocket for speed, then final result goes on-chain.
+ */
+export const SUBMIT_MULTIPLAYER_RESULT = `
+  mutation SubmitMultiplayerResult($gameType: String!, $roomCode: String!, $isWinner: Boolean!, $opponentUsername: String!) {
+    submitMultiplayerResult(gameType: $gameType, roomCode: $roomCode, isWinner: $isWinner, opponentUsername: $opponentUsername)
+  }
+`;
+
+/**
  * Update a player's username
  * The Operation enum in the contract: UpdateUsername { new_username: String }
  */

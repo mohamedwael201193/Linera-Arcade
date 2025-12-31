@@ -284,15 +284,19 @@ class LineraAdapterClass {
       : { query: graphqlQuery };
 
     try {
+      console.log('📤 Sending query:', JSON.stringify(payload, null, 2));
       const result = await this.appConnection.application.query(
         JSON.stringify(payload)
       );
       
+      console.log('📥 Raw result:', result);
       const parsed = JSON.parse(result);
+      console.log('📥 Parsed result:', JSON.stringify(parsed, null, 2));
       
       // Check for GraphQL errors
       if (parsed.errors && parsed.errors.length > 0) {
         const firstError = parsed.errors[0];
+        console.error('❌ GraphQL errors:', parsed.errors);
         throw new Error(firstError.message || 'GraphQL error');
       }
       

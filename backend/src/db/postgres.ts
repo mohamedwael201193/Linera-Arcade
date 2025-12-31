@@ -347,8 +347,23 @@ export const postgresDb = {
   },
 
   async getActiveCryptoRounds(): Promise<CryptoRound[]> {
+    // Only return rounds that are ACTIVE and not yet expired
     const result = await query<CryptoRound>(
-      `SELECT * FROM crypto_rounds WHERE status = 'ACTIVE' ORDER BY start_time DESC`
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND (start_time + (duration_secs * interval '1 second')) > NOW()
+       ORDER BY start_time DESC`
+    );
+    return result.rows;
+  },
+
+  async getExpiredUnresolvedRounds(): Promise<CryptoRound[]> {
+    // Get rounds that are ACTIVE but have passed their end time
+    const result = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND (start_time + (duration_secs * interval '1 second')) <= NOW()
+       ORDER BY start_time DESC`
     );
     return result.rows;
   },
@@ -706,6 +721,13 @@ export const postgresDb = {
   async getCoinBalance(wallet: string): Promise<number | null> {
     const player = await this.getPlayerByWallet(wallet);
     return player?.coins ?? null;
+  },
+
+  async addCoins(wallet: string, amount: number): Promise<void> {
+    await query(
+      `UPDATE players SET coins = coins + $2 WHERE wallet_address = $1`,
+      [wallet, amount]
+    );
   },
 
   // ============================================================================

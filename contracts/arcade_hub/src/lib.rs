@@ -601,6 +601,21 @@ pub enum Operation {
         event_id: u64,
         outcome: bool, // true = YES won, false = NO won
     },
+
+    // ========== MULTIPLAYER RESULT (HYBRID SYSTEM) ==========
+    /// Submit the result of an off-chain multiplayer game.
+    /// Games play via WebSocket for speed, then only final result goes on-chain.
+    /// Winner gets full XP, loser gets participation XP.
+    SubmitMultiplayerResult {
+        /// Game type (tic-tac-toe, chess, checkers, etc.)
+        game_type: String,
+        /// Room code from WebSocket server
+        room_code: String,
+        /// Whether this player won
+        is_winner: bool,
+        /// Opponent's username
+        opponent_username: String,
+    },
 }
 
 /// Response from contract operations.
@@ -633,6 +648,14 @@ pub enum ArcadeResponse {
     EventPredictionPlaced { prediction_id: u64, odds: u64 },
     /// World event resolved.
     WorldEventResolved { outcome: bool },
+
+    // ========== MULTIPLAYER RESPONSES ==========
+    /// Multiplayer game result submitted successfully.
+    MultiplayerResultSubmitted {
+        xp_earned: u64,
+        coins_earned: u64,
+        is_winner: bool,
+    },
 }
 
 /// Messages sent between chains for hub aggregation.

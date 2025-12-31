@@ -3,15 +3,18 @@
  * 
  * Express server that provides REST API for the global leaderboard.
  * Uses PostgreSQL for production, falls back to in-memory for development.
+ * Socket.IO for real-time multiplayer games.
  */
 
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { createServer } from 'http';
 import apiRoutes from './routes/api.js';
 import { memoryDb } from './db/memory.js';
 import { postgresDb } from './db/postgres.js';
 import { binanceService } from './services/binance.js';
+import { initializeMultiplayer } from './multiplayer/index.js';
 
 // Load environment variables
 dotenv.config();
@@ -21,7 +24,11 @@ const usePostgres = !!process.env.DATABASE_URL;
 export const db = usePostgres ? postgresDb : memoryDb;
 
 const app = express();
+const httpServer = createServer(app);
 const PORT = parseInt(process.env.PORT || '3001', 10);
+
+// Initialize multiplayer system
+const io = initializeMultiplayer(httpServer);
 
 // =============================================================================
 // MIDDLEWARE
@@ -104,7 +111,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // =============================================================================
 
 // Start server and seed test data
-app.listen(PORT, async () => {
+httpServer.listen(PORT, async () => {
   // Run migrations if using PostgreSQL
   if (usePostgres) {
     try {
@@ -210,51 +217,46 @@ app.listen(PORT, async () => {
   
   setInterval(async () => {
     try {
-      const activeRounds = await db.getActiveCryptoRounds();
-      const now = Date.now();
+      // Get expired rounds that need resolution (not the active ones)
+      const expiredRounds = await db.getExpiredUnresolvedRounds();
       
-      for (const round of activeRounds) {
-        // round.start_time is already a Date object
-        const endTime = round.start_time.getTime() + (round.duration_secs * 1000);
-        
-        if (now >= endTime) {
-          console.log(`⏰ Auto-resolving round ${round.id} (${round.asset})...`);
+      for (const round of expiredRounds) {
+        console.log(`⏰ Auto-resolving expired round ${round.id} (${round.asset})...`);
+        try {
+          let endPrice: number;
           try {
-            let endPrice: number;
+            const priceData = await binanceService.getPrice(round.asset as 'BTC' | 'ETH');
+            endPrice = priceData.price;
+          } catch {
+            // Use fallback with slight variance to simulate market movement
+            const fallback = FALLBACK_PRICES[round.asset as 'BTC' | 'ETH'];
+            const variance = Math.random() * 0.01 - 0.005; // -0.5% to +0.5%
+            endPrice = Math.round(fallback * (1 + variance));
+            console.warn(`⚠️ Using fallback price for ${round.asset}: $${endPrice/100}`);
+          }
+          
+          const resolved = await db.resolveCryptoRound(round.id, endPrice);
+          if (resolved) {
+            console.log(`✅ Round ${round.id} resolved: ${round.asset} ${resolved.winning_direction} (${round.start_price/100} → ${endPrice/100})`);
+            
+            // Create a new round for the same asset
+            let newStartPrice: number;
             try {
               const priceData = await binanceService.getPrice(round.asset as 'BTC' | 'ETH');
-              endPrice = priceData.price;
+              newStartPrice = priceData.price;
             } catch {
-              // Use fallback with slight variance to simulate market movement
-              const fallback = FALLBACK_PRICES[round.asset as 'BTC' | 'ETH'];
-              const variance = Math.random() * 0.01 - 0.005; // -0.5% to +0.5%
-              endPrice = Math.round(fallback * (1 + variance));
-              console.warn(`⚠️ Using fallback price for ${round.asset}: $${endPrice/100}`);
+              newStartPrice = endPrice; // Use last end price
             }
             
-            const resolved = await db.resolveCryptoRound(round.id, endPrice);
-            if (resolved) {
-              console.log(`✅ Round ${round.id} resolved: ${round.asset} ${resolved.winning_direction} (${round.start_price/100} → ${endPrice/100})`);
-              
-              // Create a new round for the same asset
-              let newStartPrice: number;
-              try {
-                const priceData = await binanceService.getPrice(round.asset as 'BTC' | 'ETH');
-                newStartPrice = priceData.price;
-              } catch {
-                newStartPrice = endPrice; // Use last end price
-              }
-              
-              const newRound = await db.createCryptoRound({
-                asset: round.asset as 'BTC' | 'ETH',
-                start_price: newStartPrice,
-                duration_secs: 300, // 5 minutes
-              });
-              console.log(`🆕 Created new round ${newRound.id} for ${newRound.asset} at $${newStartPrice/100}`);
-            }
-          } catch (priceErr) {
-            console.error(`Failed to resolve round ${round.id}:`, priceErr);
+            const newRound = await db.createCryptoRound({
+              asset: round.asset as 'BTC' | 'ETH',
+              start_price: newStartPrice,
+              duration_secs: 300, // 5 minutes
+            });
+            console.log(`🆕 Created new round ${newRound.id} for ${newRound.asset} at $${newStartPrice/100}`);
           }
+        } catch (priceErr) {
+          console.error(`Failed to resolve round ${round.id}:`, priceErr);
         }
       }
     } catch (err) {

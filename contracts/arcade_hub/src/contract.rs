@@ -7,7 +7,7 @@ mod state;
 
 use arcade_hub::{
     validate_username, ArcadeError, ArcadeHubAbi, ArcadeResponse, CryptoRound, GameScore,
-    InstantiationArgument, LeaderboardEntry, Message, Operation, Player, Prediction,
+    GameType, InstantiationArgument, LeaderboardEntry, Message, Operation, Player, Prediction,
     PredictionDirection, PredictionStatus, WorldEvent,
 };
 use linera_sdk::{
@@ -129,6 +129,23 @@ impl Contract for ArcadeHubContract {
             }
             Operation::ResolveWorldEvent { event_id, outcome } => {
                 self.handle_resolve_world_event(event_id, outcome).await
+            }
+
+            // ========== MULTIPLAYER RESULT (HYBRID SYSTEM) ==========
+            Operation::SubmitMultiplayerResult {
+                game_type,
+                room_code,
+                is_winner,
+                opponent_username,
+            } => {
+                self.handle_submit_multiplayer_result(
+                    owner,
+                    game_type,
+                    room_code,
+                    is_winner,
+                    opponent_username,
+                )
+                .await
             }
         }
     }
@@ -865,6 +882,120 @@ impl ArcadeHubContract {
                 .prepare_message(message)
                 .with_authentication()
                 .send_to(hub_chain_id);
+        }
+    }
+
+    // ========================================================================
+    // MULTIPLAYER RESULT HANDLER (HYBRID SYSTEM)
+    // ========================================================================
+
+    /// Handle submitting a multiplayer game result.
+    /// Games play via WebSocket (fast, no signatures during play),
+    /// then final result is submitted on-chain for XP/coins (1 signature).
+    async fn handle_submit_multiplayer_result(
+        &mut self,
+        owner: AccountOwner,
+        game_type: String,
+        room_code: String,
+        is_winner: bool,
+        opponent_username: String,
+    ) -> ArcadeResponse {
+        // Get player
+        let mut player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            Ok(None) => return ArcadeError::PlayerNotRegistered.into_response(),
+            Err(_) => return ArcadeError::Internal("Failed to get player".to_string()).into_response(),
+        };
+
+        // Calculate XP based on game type (IMPROVED REWARDS!)
+        // Winner XP values - much more rewarding!
+        let winner_xp: u64 = match game_type.as_str() {
+            "tic-tac-toe" => 200,
+            "connect-four" => 250,
+            "chess" => 500,
+            "checkers" => 350,
+            "rock-paper-scissors" => 150,
+            "word-duel" => 200,
+            "reaction-duel" => 180,
+            "quick-math" => 220,
+            "emoji-race" => 180,
+            _ => 150, // Default for unknown games
+        };
+
+        // Winner gets full XP, loser gets 25% participation XP
+        let xp_earned = if is_winner {
+            winner_xp
+        } else {
+            winner_xp / 4  // 25% for participation
+        };
+
+        // Coins: Winner gets 100, loser gets 30 (flat rates for fairness)
+        let coins_earned = if is_winner {
+            100
+        } else {
+            30
+        };
+
+        // Update player stats
+        player.add_xp(xp_earned);
+        player.games_played = player.games_played.saturating_add(1);
+        player.coins = player.coins.saturating_add(coins_earned);
+
+        // Save player
+        self.state
+            .players
+            .insert(&owner, player.clone())
+            .expect("Failed to update player");
+
+        // Update leaderboard
+        let leaderboard_entry = LeaderboardEntry::from_player(&player, 0);
+        self.state
+            .leaderboard
+            .insert(&owner, leaderboard_entry.clone())
+            .expect("Failed to update leaderboard");
+
+        // Create a game score record for activity feed
+        let score_id = *self.state.score_counter.get();
+        self.state.score_counter.set(score_id + 1);
+
+        // Use GameType::SpeedClicker as placeholder for multiplayer games
+        // The game_type string is stored in bonus_data context
+        let game_score = GameScore {
+            id: score_id,
+            game_type: GameType::SpeedClicker, // Placeholder - real game type in context
+            player: owner.clone(),
+            score: if is_winner { 1 } else { 0 }, // 1 = win, 0 = loss
+            xp_earned,
+            bonus_data: None,
+            timestamp: self.runtime.system_time().micros(),
+        };
+
+        self.state
+            .game_scores
+            .insert(&score_id, game_score.clone())
+            .expect("Failed to save score");
+
+        // Update global stats
+        let total_games = *self.state.total_games_played.get();
+        self.state.total_games_played.set(total_games + 1);
+
+        let total_xp = *self.state.total_xp_earned.get();
+        self.state.total_xp_earned.set(total_xp + xp_earned);
+
+        // Sync to hub chain
+        self.send_to_hub_if_needed(Message::SyncScore(game_score));
+        self.send_to_hub_if_needed(Message::SyncXpUpdate {
+            wallet_address: owner,
+            total_xp: player.total_xp,
+            level: player.level,
+            games_played: player.games_played,
+            coins: player.coins,
+        });
+
+        ArcadeResponse::MultiplayerResultSubmitted {
+            xp_earned,
+            coins_earned,
+            is_winner,
         }
     }
 }

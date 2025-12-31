@@ -5,3 +5,4 @@ export { LeaderboardPage } from './LeaderboardPage';
 export { ProfilePage } from './ProfilePage';
 export { PredictionsPage } from './PredictionsPage';
 export { ActivityPage } from './ActivityPage';
+export { MultiplayerPage } from './MultiplayerPage';

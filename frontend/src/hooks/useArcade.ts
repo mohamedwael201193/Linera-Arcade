@@ -33,7 +33,7 @@ export interface ArcadeState {
   // Actions
   loadPlayer: () => Promise<void>;
   registerPlayer: (username: string) => Promise<boolean>;
-  submitScore: (gameType: GameType, score: number, bonusData?: number) => Promise<boolean>;
+  submitScore: (gameType: GameType | string, score: number, bonusData?: number) => Promise<boolean>;
   refreshPlayer: () => Promise<void>;
 }
 
@@ -111,10 +111,10 @@ export function useArcade(): ArcadeState {
   }, [isAppConnected, loadPlayer]);
   
   /**
-   * Submit a game score
+   * Submit a game score (works for single-player and multiplayer games)
    */
   const submitScore = useCallback(async (
-    gameType: GameType,
+    gameType: GameType | string,
     score: number,
     bonusData?: number
   ): Promise<boolean> => {
@@ -133,7 +133,7 @@ export function useArcade(): ArcadeState {
     
     try {
       console.log(`🎮 Submitting score: ${score} for ${gameType}`);
-      await arcadeApi.submitScore(gameType, score, bonusData);
+      await arcadeApi.submitScore(gameType as GameType, score, bonusData);
       
       // Refresh player data to get updated XP
       await loadPlayer();

@@ -223,6 +223,25 @@ function loadData() {
     Object.assign(stats, data.stats);
     
     console.log(`✅ Data loaded: ${players.size} players, ${scores.length} scores, ${activityLogs.length} activities`);
+    
+    // Cleanup stale ACTIVE rounds that have expired
+    const now = Date.now();
+    let staleCount = 0;
+    for (const [id, round] of cryptoRounds.entries()) {
+      if (round.status === 'ACTIVE') {
+        const endTime = round.start_time.getTime() + (round.duration_secs * 1000);
+        if (now >= endTime) {
+          // Mark as RESOLVED with the start price (no change = draw)
+          round.status = 'RESOLVED';
+          round.end_price = round.start_price;
+          round.winning_direction = null; // No winner for stale rounds
+          staleCount++;
+        }
+      }
+    }
+    if (staleCount > 0) {
+      console.log(`🧹 Cleaned up ${staleCount} stale ACTIVE rounds`);
+    }
   } catch (error) {
     console.error('❌ Failed to load data:', error);
   }
@@ -511,6 +530,15 @@ export const memoryDb = {
     start_price: number;
     duration_secs: number;
   }): Promise<CryptoRound> {
+    // Check if there's already an active round for this asset
+    const existingActive = Array.from(cryptoRounds.values())
+      .find(r => r.asset === input.asset && r.status === 'ACTIVE');
+    
+    if (existingActive) {
+      console.log(`⚠️ Active round for ${input.asset} already exists (ID: ${existingActive.id}), skipping creation`);
+      return existingActive;
+    }
+    
     const round: CryptoRound = {
       id: nextRoundId++,
       asset: input.asset,
@@ -526,6 +554,18 @@ export const memoryDb = {
     };
     
     cryptoRounds.set(round.id, round);
+    
+    // Cleanup old resolved rounds to prevent memory bloat (keep max 50)
+    const allRounds = Array.from(cryptoRounds.values())
+      .sort((a, b) => b.start_time.getTime() - a.start_time.getTime());
+    if (allRounds.length > 50) {
+      const toDelete = allRounds.slice(50);
+      for (const r of toDelete) {
+        cryptoRounds.delete(r.id);
+      }
+      console.log(`🧹 Cleaned up ${toDelete.length} old rounds`);
+    }
+    
     saveData();
     return round;
   },
@@ -535,9 +575,27 @@ export const memoryDb = {
   },
 
   async getActiveCryptoRounds(): Promise<CryptoRound[]> {
+    const now = new Date();
     return Array.from(cryptoRounds.values())
-      .filter(r => r.status === 'ACTIVE')
-      .sort((a, b) => b.start_time.getTime() - a.start_time.getTime());
+      .filter(r => {
+        if (r.status !== 'ACTIVE') return false;
+        // Also filter out expired rounds that haven't been resolved yet
+        const endTime = new Date(r.start_time.getTime() + r.duration_secs * 1000);
+        return now <= endTime;
+      })
+      .sort((a, b) => b.start_time.getTime() - a.start_time.getTime())
+      .slice(0, 2); // Maximum 2 active rounds (1 BTC, 1 ETH)
+  },
+
+  // Get rounds that have ACTIVE status but are expired (need auto-resolution)
+  async getExpiredUnresolvedRounds(): Promise<CryptoRound[]> {
+    const now = new Date();
+    return Array.from(cryptoRounds.values())
+      .filter(r => {
+        if (r.status !== 'ACTIVE') return false;
+        const endTime = new Date(r.start_time.getTime() + r.duration_secs * 1000);
+        return now > endTime; // Expired but still ACTIVE status
+      });
   },
 
   async getAllCryptoRounds(limit: number = 50): Promise<CryptoRound[]> {
@@ -894,23 +952,73 @@ export const memoryDb = {
     return player?.coins ?? null;
   },
 
-  // Initialize prediction rounds (no mock data)
+  async addCoins(wallet: string, amount: number): Promise<number | null> {
+    const player = players.get(wallet.toLowerCase());
+    if (!player) return null;
+    
+    player.coins += amount;
+    saveData();
+    
+    return player.coins;
+  },
+
+  // Initialize prediction rounds (only if needed)
   async seed() {
     // Skip mock player data - only real users who register will appear
     
-    // Create crypto rounds with real prices from Binance
+    // First, clean up any stale ACTIVE rounds (rounds that have expired but weren't resolved)
+    const now = new Date();
+    let staleCount = 0;
+    for (const round of cryptoRounds.values()) {
+      if (round.status === 'ACTIVE') {
+        const endTime = new Date(round.start_time.getTime() + round.duration_secs * 1000);
+        if (now > endTime) {
+          // Mark as resolved with unknown direction (will be cleaned up)
+          round.status = 'RESOLVED';
+          round.end_price = round.start_price;
+          round.winning_direction = 'UP'; // Default
+          staleCount++;
+        }
+      }
+    }
+    if (staleCount > 0) {
+      console.log(`🧹 Cleaned up ${staleCount} stale rounds from previous session`);
+      saveData();
+    }
+    
+    // Check if we already have active rounds for each asset
+    const activeRounds = await this.getActiveCryptoRounds();
+    const hasActiveBTC = activeRounds.some(r => r.asset === 'BTC');
+    const hasActiveETH = activeRounds.some(r => r.asset === 'ETH');
+    
+    if (hasActiveBTC && hasActiveETH) {
+      console.log('✅ Active rounds already exist for BTC and ETH, skipping seed');
+      return;
+    }
+    
+    // Create crypto rounds with real prices from Binance (only for missing assets)
     try {
       const binanceService = await import('../services/binance.js').then(m => m.binanceService);
-      const btcPrice = await binanceService.getBTCPrice();
-      const ethPrice = await binanceService.getETHPrice();
-      await this.createCryptoRound({ asset: 'BTC', start_price: btcPrice.price, duration_secs: 300 });
-      await this.createCryptoRound({ asset: 'ETH', start_price: ethPrice.price, duration_secs: 300 });
-      console.log(`✅ Created prediction rounds with real Binance prices: BTC=$${btcPrice.price/100}, ETH=$${ethPrice.price/100}`);
+      
+      if (!hasActiveBTC) {
+        const btcPrice = await binanceService.getBTCPrice();
+        await this.createCryptoRound({ asset: 'BTC', start_price: btcPrice.price, duration_secs: 300 });
+        console.log(`✅ Created BTC round at $${btcPrice.price/100}`);
+      }
+      
+      if (!hasActiveETH) {
+        const ethPrice = await binanceService.getETHPrice();
+        await this.createCryptoRound({ asset: 'ETH', start_price: ethPrice.price, duration_secs: 300 });
+        console.log(`✅ Created ETH round at $${ethPrice.price/100}`);
+      }
     } catch (err) {
-      console.error('⚠️ Failed to fetch Binance prices, creating rounds with current market estimate:', err);
-      // Use reasonable fallback prices
-      await this.createCryptoRound({ asset: 'BTC', start_price: 9500000, duration_secs: 300 });
-      await this.createCryptoRound({ asset: 'ETH', start_price: 350000, duration_secs: 300 });
+      console.error('⚠️ Failed to fetch Binance prices, creating rounds with fallback:', err);
+      if (!hasActiveBTC) {
+        await this.createCryptoRound({ asset: 'BTC', start_price: 9500000, duration_secs: 300 });
+      }
+      if (!hasActiveETH) {
+        await this.createCryptoRound({ asset: 'ETH', start_price: 350000, duration_secs: 300 });
+      }
     }
     
     console.log('✅ Backend initialized - Ready for real users!');
