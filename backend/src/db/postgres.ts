@@ -624,8 +624,14 @@ export const postgresDb = {
     const wallet = input.wallet_address.toLowerCase();
     const outcome_value = input.outcome ? 1 : 0;
     
-    // Debug logging
-    console.log(`📊 DB placeEventPrediction: outcome=${input.outcome} (type: ${typeof input.outcome}), outcome_value=${outcome_value}`);
+    // Extensive debug logging
+    console.log(`📊 DB placeEventPrediction ENTRY:`);
+    console.log(`   input.outcome = ${input.outcome} (type: ${typeof input.outcome})`);
+    console.log(`   input.outcome ? 1 : 0 = ${input.outcome ? 1 : 0}`);
+    console.log(`   outcome_value = ${outcome_value}`);
+    console.log(`   Boolean(input.outcome) = ${Boolean(input.outcome)}`);
+    console.log(`   input.outcome === true = ${input.outcome === true}`);
+    console.log(`   input.outcome == true = ${input.outcome == true}`);
 
     // Deduct coins from player
     const playerResult = await query<Player>(

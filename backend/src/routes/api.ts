@@ -679,12 +679,19 @@ router.get('/predictions/events/:id', async (req, res) => {
 // Place event prediction
 router.post('/predictions/events/place', requireApiKey, async (req, res) => {
   try {
+    console.log(`📊 RAW REQUEST BODY:`, JSON.stringify(req.body));
+    
     const input = PlaceEventPredictionSchema.parse(req.body);
     // Transform outcome string to prediction boolean (YES/true, NO/false)
-    const outcomeBool = input.outcome.toUpperCase() === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
+    const outcomeUpper = input.outcome.toUpperCase();
+    const outcomeBool = outcomeUpper === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
     
     // Debug logging to trace YES/NO bug
-    console.log(`📊 EVENT PREDICTION: wallet=${input.wallet_address.slice(0,10)}..., event=${input.event_id}, outcome_input="${input.outcome}", outcomeBool=${outcomeBool}, amount=${input.amount}`);
+    console.log(`📊 EVENT PREDICTION DEBUG:`);
+    console.log(`   input.outcome = "${input.outcome}" (type: ${typeof input.outcome})`);
+    console.log(`   outcomeUpper = "${outcomeUpper}"`);
+    console.log(`   outcomeUpper === 'YES' = ${outcomeUpper === 'YES'}`);
+    console.log(`   outcomeBool = ${outcomeBool} (type: ${typeof outcomeBool})`);
     
     const prediction = await (await ensureDb()).placeEventPrediction({
       wallet_address: input.wallet_address,
