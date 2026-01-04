@@ -677,8 +677,15 @@ router.get('/predictions/events/:id', async (req, res) => {
 });
 
 // Place event prediction
+// Track prediction requests to detect duplicates
+let predictionRequestCount = 0;
+
 router.post('/predictions/events/place', requireApiKey, async (req, res) => {
+  predictionRequestCount++;
+  const requestId = predictionRequestCount;
+  
   try {
+    console.log(`📊 ========== PREDICTION REQUEST #${requestId} ==========`);
     console.log(`📊 RAW REQUEST BODY:`, JSON.stringify(req.body));
     
     const input = PlaceEventPredictionSchema.parse(req.body);
@@ -687,7 +694,7 @@ router.post('/predictions/events/place', requireApiKey, async (req, res) => {
     const outcomeBool = outcomeUpper === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
     
     // Debug logging to trace YES/NO bug
-    console.log(`📊 EVENT PREDICTION DEBUG:`);
+    console.log(`📊 [#${requestId}] EVENT PREDICTION DEBUG:`);
     console.log(`   input.outcome = "${input.outcome}" (type: ${typeof input.outcome})`);
     console.log(`   outcomeUpper = "${outcomeUpper}"`);
     console.log(`   outcomeUpper === 'YES' = ${outcomeUpper === 'YES'}`);
@@ -699,6 +706,8 @@ router.post('/predictions/events/place', requireApiKey, async (req, res) => {
       outcome: outcomeBool,
       amount: input.amount,
     });
+    
+    console.log(`📊 [#${requestId}] Prediction created successfully`);
     
     if (!prediction) {
       return res.status(400).json({ error: 'Failed to place prediction. Check balance and event status.' });
