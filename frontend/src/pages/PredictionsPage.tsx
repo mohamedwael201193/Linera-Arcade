@@ -12,6 +12,7 @@
 import { useState, useEffect } from 'react';
 import { usePredictions } from '../hooks/usePredictions';
 import { useArcade } from '../hooks/useArcade';
+import { useToast } from '../components/Toast';
 import { formatCoins, formatPrice, getAssetColor } from '../types';
 import { CryptoRoundEntry, WorldEventEntry } from '../lib/api/backendApi';
 import { TradingViewTicker } from '../components/TradingViewChart';
@@ -81,6 +82,7 @@ function CountdownDisplay({ endTime, size = 'normal' }: { endTime: string | unde
 export function PredictionsPage() {
   const { walletAddress, isRegistered } = useArcade();
   const predictions = usePredictions(walletAddress);
+  const toast = useToast();
   
   const [activeTab, setActiveTab] = useState<TabType>('crypto');
   const [selectedRound, setSelectedRound] = useState<CryptoRoundEntry | null>(null);
@@ -120,16 +122,26 @@ export function PredictionsPage() {
     try {
       const success = await predictions.placeCryptoPrediction(selectedRound.id, direction, predictionAmount);
       if (success) {
-        alert(`🎯 Prediction placed! You bet ${predictionAmount} coins on ${direction}`);
+        if (direction === 'UP') {
+          toast.predictionYes(
+            '🎯 Prediction Placed!',
+            `You bet ${predictionAmount} coins that ${selectedRound.asset} will go UP`
+          );
+        } else {
+          toast.predictionNo(
+            '🎯 Prediction Placed!',
+            `You bet ${predictionAmount} coins that ${selectedRound.asset} will go DOWN`
+          );
+        }
         // Refresh user data to show the prediction
         predictions.refreshUserData();
         predictions.refreshCryptoRounds();
       } else {
-        alert('Failed to place prediction. Please try again.');
+        toast.error('Prediction Failed', 'Please check your balance and try again.');
       }
     } catch (error) {
       console.error('Failed to place prediction:', error);
-      alert('Failed to place prediction. Please try again.');
+      toast.error('Prediction Failed', 'An error occurred. Please try again.');
     } finally {
       setIsPlacingPrediction(false);
     }
@@ -139,6 +151,7 @@ export function PredictionsPage() {
   const handleEventPrediction = async (outcome: string) => {
     if (!selectedEvent || !walletAddress || isPlacingPrediction) return;
     
+    const eventTitle = selectedEvent.title;
     setIsPlacingPrediction(true);
     try {
       const success = await predictions.placeEventPrediction(selectedEvent.id, outcome, predictionAmount);
@@ -148,13 +161,23 @@ export function PredictionsPage() {
         await predictions.refreshWorldEvents();
         // Close modal and show success
         setSelectedEvent(null);
-        alert(`🎯 Prediction placed! You bet ${predictionAmount} coins on "${outcome}" for "${selectedEvent.title.substring(0, 50)}..."`);
+        if (outcome === 'YES') {
+          toast.predictionYes(
+            '🎯 Prediction Placed!',
+            `You bet ${predictionAmount} coins on YES for "${eventTitle.substring(0, 40)}${eventTitle.length > 40 ? '...' : ''}"`
+          );
+        } else {
+          toast.predictionNo(
+            '🎯 Prediction Placed!',
+            `You bet ${predictionAmount} coins on NO for "${eventTitle.substring(0, 40)}${eventTitle.length > 40 ? '...' : ''}"`
+          );
+        }
       } else {
-        alert('Failed to place prediction. Check your coin balance and try again.');
+        toast.error('Prediction Failed', 'Check your coin balance and try again.');
       }
     } catch (error) {
       console.error('Failed to place prediction:', error);
-      alert('Failed to place prediction. Please try again.');
+      toast.error('Prediction Failed', 'An error occurred. Please try again.');
     } finally {
       setIsPlacingPrediction(false);
     }
@@ -163,20 +186,23 @@ export function PredictionsPage() {
   // Handle claiming daily bonus
   const handleClaimBonus = async () => {
     if (!walletAddress) {
-      alert('Please connect your wallet first!');
+      toast.warning('Wallet Required', 'Please connect your wallet first!');
       return;
     }
     try {
       const result = await predictions.claimDailyBonus();
       if (result?.success) {
-        alert(`🎉 Claimed ${result.coins} coins! Your balance has been updated.`);
+        toast.success(
+          '🎉 Daily Bonus Claimed!',
+          `You received ${result.coins} coins! Your balance has been updated.`
+        );
         predictions.refreshUserData();
       } else {
-        alert('Failed to claim bonus. You may have already claimed today.');
+        toast.warning('Already Claimed', 'You have already claimed your daily bonus today.');
       }
     } catch (error) {
       console.error('Failed to claim bonus:', error);
-      alert('Failed to claim bonus. Please try again.');
+      toast.error('Claim Failed', 'Failed to claim bonus. Please try again.');
     }
   };
 

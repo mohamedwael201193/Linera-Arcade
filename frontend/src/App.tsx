@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import { Layout } from './components/Layout';
+import { ToastProvider } from './components/Toast';
 import { HomePage } from './pages/HomePage';
 import { GamesPage } from './pages/GamesPage';
 import { LeaderboardPage } from './pages/LeaderboardPage';
@@ -15,7 +16,7 @@ function App() {
   const { isConnecting, error } = useLineraConnection();
 
   return (
-    <>
+    <ToastProvider>
       {/* Connection status banner */}
       {isConnecting && (
         <div className="fixed top-0 left-0 right-0 z-50 bg-arcade-card border-b border-arcade-border p-2 text-center">
@@ -45,7 +46,7 @@ function App() {
           <Route path="profile" element={<ProfilePage />} />
         </Route>
       </Routes>
-    </>
+    </ToastProvider>
   );
 }
 

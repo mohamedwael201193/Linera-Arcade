@@ -681,11 +681,11 @@ router.post('/predictions/events/place', requireApiKey, async (req, res) => {
   try {
     const input = PlaceEventPredictionSchema.parse(req.body);
     // Transform outcome string to prediction boolean (YES/true, NO/false)
-    const predictionBool = input.outcome.toUpperCase() === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
+    const outcomeBool = input.outcome.toUpperCase() === 'YES' || input.outcome === '1' || input.outcome.toLowerCase() === 'true';
     const prediction = await (await ensureDb()).placeEventPrediction({
       wallet_address: input.wallet_address,
       event_id: input.event_id,
-      prediction: predictionBool,
+      outcome: outcomeBool,
       amount: input.amount,
     });
     
