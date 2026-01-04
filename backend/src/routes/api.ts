@@ -639,6 +639,15 @@ router.post('/predictions/events', requireApiKey, async (req, res) => {
   }
 });
 
+// Helper to transform world event (BIGINT values come as strings from PostgreSQL)
+function transformWorldEvent(event: any) {
+  return {
+    ...event,
+    total_yes: Number(event.total_yes) || 0,
+    total_no: Number(event.total_no) || 0,
+  };
+}
+
 // Get all world events
 router.get('/predictions/events', async (req, res) => {
   try {
@@ -655,7 +664,10 @@ router.get('/predictions/events', async (req, res) => {
       events = await (await ensureDb()).getAllWorldEvents(limit);
     }
     
-    res.json({ events });
+    // Transform BIGINT strings to numbers
+    const transformedEvents = events.map(transformWorldEvent);
+    
+    res.json({ events: transformedEvents });
   } catch (error) {
     console.error('Error getting world events:', error);
     res.status(500).json({ error: 'Failed to get world events' });
@@ -669,7 +681,7 @@ router.get('/predictions/events/:id', async (req, res) => {
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
-    res.json({ event });
+    res.json({ event: transformWorldEvent(event) });
   } catch (error) {
     console.error('Error getting world event:', error);
     res.status(500).json({ error: 'Failed to get world event' });
