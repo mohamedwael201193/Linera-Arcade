@@ -643,6 +643,10 @@ export const postgresDb = {
     }
     const player = playerResult.rows[0];
 
+    // Get event BEFORE update to see current totals
+    const eventBefore = await this.getWorldEvent(input.event_id);
+    console.log(`📊 Event #${input.event_id} BEFORE: total_yes=${eventBefore?.total_yes}, total_no=${eventBefore?.total_no}`);
+
     // Create prediction
     const result = await query<Prediction>(
       `INSERT INTO predictions (wallet_address, prediction_type, reference_id, direction_or_outcome, amount)
@@ -652,7 +656,7 @@ export const postgresDb = {
     );
     const prediction = result.rows[0];
     
-    console.log(`📊 Created prediction #${prediction.id}: direction_or_outcome=${prediction.direction_or_outcome}`);
+    console.log(`📊 Created prediction #${prediction.id}: direction_or_outcome=${prediction.direction_or_outcome}, outcome_input=${input.outcome}`);
 
     // Update event totals
     if (input.outcome) {
@@ -663,12 +667,13 @@ export const postgresDb = {
       await query(`UPDATE world_events SET total_no = total_no + $2 WHERE id = $1`, [input.event_id, input.amount]);
     }
 
-    // Get event for activity log
-    const event = await this.getWorldEvent(input.event_id);
+    // Get event AFTER update to verify
+    const eventAfter = await this.getWorldEvent(input.event_id);
+    console.log(`📊 Event #${input.event_id} AFTER: total_yes=${eventAfter?.total_yes}, total_no=${eventAfter?.total_no}`);
 
     // Log activity
     await this.logActivity(wallet, player.username, 'PREDICTION_PLACED', {
-      eventTitle: event?.title,
+      eventTitle: eventAfter?.title,
       prediction: input.outcome ? 'YES' : 'NO',
       amount: input.amount,
       eventId: input.event_id,
@@ -766,44 +771,26 @@ export const postgresDb = {
       }
     }
 
-    // FORCE RESET: One-time fix for YES-stored-as-NO bug (remove after Jan 6, 2026)
-    // Check if we need to reset by looking for the corruption marker
-    const corruptionCheck = await query<{ count: string }>(
-      `SELECT COUNT(*) as count FROM world_events WHERE total_yes > 0 OR total_no > 0`
-    );
-    const hasAnyBets = parseInt(corruptionCheck.rows[0]?.count || '0') > 0;
+    // FORCE HARD RESET - Jan 5, 2026: Clear ALL corrupted data unconditionally
+    // This will reset ALL world events and predictions to start fresh
+    console.log('🔄 FORCE RESET: Clearing ALL world events to fix corruption...');
     
-    // Also check if predictions don't match totals (the actual corruption test)
-    const activeEvents = await this.getActiveWorldEvents();
-    let needsReset = false;
+    // Check current state for logging
+    const currentEvents = await this.getActiveWorldEvents();
+    const currentPreds = await query<{ count: string }>(`SELECT COUNT(*) as count FROM predictions WHERE prediction_type = 'EVENT'`);
+    console.log(`📊 Current state: ${currentEvents.length} events, ${currentPreds.rows[0]?.count || 0} event predictions`);
     
-    for (const event of activeEvents) {
-      const actualTotals = await query<{ yes_sum: string; no_sum: string }>(
-        `SELECT 
-           COALESCE(SUM(CASE WHEN direction_or_outcome = 1 THEN amount ELSE 0 END), 0) as yes_sum,
-           COALESCE(SUM(CASE WHEN direction_or_outcome = 0 THEN amount ELSE 0 END), 0) as no_sum
-         FROM predictions 
-         WHERE prediction_type = 'EVENT' AND reference_id = $1`,
-        [event.id]
-      );
-      
-      const actualYes = parseInt(actualTotals.rows[0]?.yes_sum || '0');
-      const actualNo = parseInt(actualTotals.rows[0]?.no_sum || '0');
-      
-      // Check if stored totals match actual predictions
-      if (event.total_yes !== actualYes || event.total_no !== actualNo) {
-        console.log(`⚠️ Event #${event.id} "${event.title.substring(0, 30)}..." has mismatched totals:`);
-        console.log(`   Stored: yes=${event.total_yes}, no=${event.total_no}`);
-        console.log(`   Actual: yes=${actualYes}, no=${actualNo}`);
-        needsReset = true;
-        break; // No need to check more, we'll reset everything
-      }
+    // Log each event's current totals
+    for (const ev of currentEvents) {
+      console.log(`   Event #${ev.id}: total_yes=${ev.total_yes}, total_no=${ev.total_no}`);
     }
     
-    if (needsReset || (hasAnyBets && activeEvents.length > 0)) {
-      console.log('🔄 Detected corrupted event data or stale bets. Performing full reset...');
+    // Force reset if there are any events with non-zero totals
+    const eventsWithBets = currentEvents.filter(e => (e.total_yes || 0) > 0 || (e.total_no || 0) > 0);
+    if (eventsWithBets.length > 0) {
+      console.log(`🔄 Found ${eventsWithBets.length} events with bets. Performing HARD RESET...`);
       await this.resetWorldEvents();
-      console.log('✅ World events reset complete!');
+      console.log('✅ HARD RESET complete!');
     }
 
     // Seed Polymarket-style world events (only if none exist)
