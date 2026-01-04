@@ -753,8 +753,41 @@ export const postgresDb = {
       }
     }
 
-    // Seed Polymarket-style world events (only if none exist)
+    // Check for corrupted world events and reset them
     const activeEvents = await this.getActiveWorldEvents();
+    if (activeEvents.length > 0) {
+      // Check if any event has corrupted totals (totals don't match actual predictions)
+      let hasCorruptedData = false;
+      for (const event of activeEvents) {
+        // Get actual prediction totals from predictions table
+        const predsResult = await query<{ total_yes: string; total_no: string }>(
+          `SELECT 
+             COALESCE(SUM(CASE WHEN direction_or_outcome = 1 THEN amount ELSE 0 END), 0) as total_yes,
+             COALESCE(SUM(CASE WHEN direction_or_outcome = 0 THEN amount ELSE 0 END), 0) as total_no
+           FROM predictions 
+           WHERE prediction_type = 'EVENT' AND reference_id = $1 AND status != 'CANCELLED'`,
+          [event.id]
+        );
+        const actualYes = parseInt(predsResult.rows[0]?.total_yes || '0');
+        const actualNo = parseInt(predsResult.rows[0]?.total_no || '0');
+        
+        if (event.total_yes !== actualYes || event.total_no !== actualNo) {
+          console.log(`⚠️ Event #${event.id} has corrupted totals: stored(${event.total_yes}/${event.total_no}) vs actual(${actualYes}/${actualNo})`);
+          // Fix the totals
+          await query(
+            `UPDATE world_events SET total_yes = $2, total_no = $3 WHERE id = $1`,
+            [event.id, actualYes, actualNo]
+          );
+          console.log(`  ✅ Fixed event #${event.id} totals to (${actualYes}/${actualNo})`);
+          hasCorruptedData = true;
+        }
+      }
+      if (hasCorruptedData) {
+        console.log('✅ Corrupted event totals have been fixed');
+      }
+    }
+
+    // Seed Polymarket-style world events (only if none exist)
     if (activeEvents.length === 0) {
       console.log('📰 Seeding Polymarket-style trending events in PostgreSQL...');
       
