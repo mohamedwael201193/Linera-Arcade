@@ -623,6 +623,9 @@ export const postgresDb = {
   }): Promise<Prediction> {
     const wallet = input.wallet_address.toLowerCase();
     const outcome_value = input.outcome ? 1 : 0;
+    
+    // Debug logging
+    console.log(`📊 DB placeEventPrediction: outcome=${input.outcome} (type: ${typeof input.outcome}), outcome_value=${outcome_value}`);
 
     // Deduct coins from player
     const playerResult = await query<Player>(
@@ -642,11 +645,15 @@ export const postgresDb = {
       [wallet, input.event_id, outcome_value, input.amount]
     );
     const prediction = result.rows[0];
+    
+    console.log(`📊 Created prediction #${prediction.id}: direction_or_outcome=${prediction.direction_or_outcome}`);
 
     // Update event totals
     if (input.outcome) {
+      console.log(`📊 Updating total_YES for event ${input.event_id} by +${input.amount}`);
       await query(`UPDATE world_events SET total_yes = total_yes + $2 WHERE id = $1`, [input.event_id, input.amount]);
     } else {
+      console.log(`📊 Updating total_NO for event ${input.event_id} by +${input.amount}`);
       await query(`UPDATE world_events SET total_no = total_no + $2 WHERE id = $1`, [input.event_id, input.amount]);
     }
 

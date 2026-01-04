@@ -744,7 +744,7 @@ export function PredictionsPage() {
                   <CategoryIcon category={selectedEvent.category} size={32} />
                   {hasAnyBets(selectedEvent) ? (
                     <span className={`px-3 py-1 rounded-full text-sm font-bold ${
-                      (getYesOdds(selectedEvent) || 50) >= 50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                      (getYesOdds(selectedEvent) ?? 50) >= 50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
                     }`}>
                       {getYesOdds(selectedEvent)}% chance
                     </span>
@@ -804,7 +804,7 @@ export function PredictionsPage() {
                       <p className="text-xs text-gray-500 mt-1">🪙 {(selectedEvent.total_yes || 0).toLocaleString()} staked</p>
                     </div>
                     <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center">
-                      <p className="text-red-400 text-2xl font-bold">{hasAnyBets(selectedEvent) ? `${100 - (getYesOdds(selectedEvent) || 50)}%` : '-'}</p>
+                      <p className="text-red-400 text-2xl font-bold">{hasAnyBets(selectedEvent) ? `${100 - (getYesOdds(selectedEvent) ?? 0)}%` : '-'}</p>
                       <p className="text-red-400/70 text-sm">No odds</p>
                       <p className="text-xs text-gray-500 mt-1">🪙 {(selectedEvent.total_no || 0).toLocaleString()} staked</p>
                     </div>
