@@ -747,6 +747,21 @@ router.get('/predictions/events/:id/predictions', async (req, res) => {
   }
 });
 
+// Admin: Reset all world events (delete corrupted data and re-seed fresh)
+router.post('/admin/reset-world-events', requireApiKey, async (req, res) => {
+  try {
+    console.log('🔄 Admin request to reset world events...');
+    const result = await (await ensureDb()).resetWorldEvents();
+    res.json({ 
+      success: true, 
+      message: `Reset complete! Re-seeded ${result.eventsCount} fresh world events with zero totals.` 
+    });
+  } catch (error) {
+    console.error('Error resetting world events:', error);
+    res.status(500).json({ error: 'Failed to reset world events' });
+  }
+});
+
 // =============================================================================
 // USER PREDICTION ENDPOINTS
 // =============================================================================
