@@ -15,6 +15,7 @@
     "@dynamic-labs/sdk-react-core": "^4.0.0",
     "@linera/client": "0.15.8",
     "@linera/signer": "^0.15.6",
+    "@web3icons/react": "^4.1.10",
     "framer-motion": "^11.15.0",
     "graphql": "^16.12.0",
     "graphql-ws": "^5.16.2",

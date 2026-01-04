@@ -94,6 +94,27 @@ Predict BTC/ETH price movement with real price data:
 - **Payout**: 1.9x on correct prediction
 - **Price Source**: CryptoCompare API (real-time)
 
+### 🌍 World Events Predictions 
+
+Predict outcomes of real-world events:
+
+| Category | Example Events |
+|----------|----------------|
+| **Crypto** | Will Bitcoin hit $100K by Jan 2026? |
+| **Tech** | Will SpaceX complete orbital flight by March 2026? |
+| **Geopolitics** | Will there be a Russia-Ukraine ceasefire by June 2026? |
+| **Finance** | Will the Fed cut interest rates in January 2026? |
+| **Sports** | Will Manchester City win Premier League 2025-26? |
+| **Culture** | Will AI generate a Billboard Hot 100 song by 2026? |
+
+**Features:**
+- **YES/NO Predictions** - Simple binary outcomes
+- **Real Pools** - All pools start at 0, grow with real bets
+- **Dynamic Odds** - Odds change based on betting volume
+- **Long-term Markets** - Events from 14 days to 6+ months
+- **On-chain Signing** - All bets require wallet signature
+- **Category Filters** - Filter events by Crypto, Tech, Sports, etc.
+
 ### 💰 Token Economy
 
 | Action | Reward |

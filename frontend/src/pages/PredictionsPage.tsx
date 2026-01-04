@@ -87,6 +87,7 @@ export function PredictionsPage() {
   const [selectedEvent, setSelectedEvent] = useState<WorldEventEntry | null>(null);
   const [predictionAmount, setPredictionAmount] = useState(25);
   const [isPlacingPrediction, setIsPlacingPrediction] = useState(false);
+  const [eventCategory, setEventCategory] = useState<string>('All');
 
   // Auto-refresh rounds AND user predictions every 15 seconds
   useEffect(() => {
@@ -108,14 +109,8 @@ export function PredictionsPage() {
     }
   }, [predictions.activeCryptoRounds, selectedRound]);
 
-  useEffect(() => {
-    if (predictions.activeWorldEvents.length > 0 && !selectedEvent) {
-      const firstEvent = predictions.activeWorldEvents[0];
-      if (firstEvent) {
-        setSelectedEvent(firstEvent);
-      }
-    }
-  }, [predictions.activeWorldEvents, selectedEvent]);
+  // Don't auto-select events - let user click to open modal
+  // Events are shown in a card grid, clicking opens the prediction modal
 
   // Handle placing crypto prediction
   const handleCryptoPrediction = async (direction: 'UP' | 'DOWN') => {
@@ -148,11 +143,14 @@ export function PredictionsPage() {
     try {
       const success = await predictions.placeEventPrediction(selectedEvent.id, outcome, predictionAmount);
       if (success) {
-        alert(`🎯 Prediction placed! You bet ${predictionAmount} coins on "${outcome}"`);
-        predictions.refreshUserData();
-        predictions.refreshWorldEvents();
+        // Refresh data first
+        await predictions.refreshUserData();
+        await predictions.refreshWorldEvents();
+        // Close modal and show success
+        setSelectedEvent(null);
+        alert(`🎯 Prediction placed! You bet ${predictionAmount} coins on "${outcome}" for "${selectedEvent.title.substring(0, 50)}..."`);
       } else {
-        alert('Failed to place prediction. Please try again.');
+        alert('Failed to place prediction. Check your coin balance and try again.');
       }
     } catch (error) {
       console.error('Failed to place prediction:', error);
@@ -497,135 +495,370 @@ export function PredictionsPage() {
     </div>
   );
 
-  // Render events tab
+  // Calculate YES odds percentage for an event
+  const getYesOdds = (event: WorldEventEntry) => {
+    const total = (event.total_yes || 0) + (event.total_no || 0);
+    if (total === 0) return null; // Return null when no bets
+    return Math.round((event.total_yes || 0) / total * 100);
+  };
+  
+  // Check if event has any bets
+  const hasAnyBets = (event: WorldEventEntry) => {
+    return ((event.total_yes || 0) + (event.total_no || 0)) > 0;
+  };
+
+  // Get category icon (SVG components)
+  const CategoryIcon = ({ category, size = 24 }: { category: string; size?: number }) => {
+    const iconProps = { width: size, height: size, className: "flex-shrink-0" };
+    
+    switch (category) {
+      case 'Crypto':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-orange-400">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        );
+      case 'Tech':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-cyan-400">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        );
+      case 'Politics':
+      case 'Geopolitics':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-400">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        );
+      case 'Finance':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-green-400">
+            <line x1="12" y1="1" x2="12" y2="23"/>
+            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+        );
+      case 'Sports':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-yellow-400">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 2a10 10 0 0 0 0 20 10 10 0 0 0 0-20"/>
+            <path d="M2 12h20M12 2c2.5 2.5 4 6 4 10s-1.5 7.5-4 10c-2.5-2.5-4-6-4-10s1.5-7.5 4-10"/>
+          </svg>
+        );
+      case 'Culture':
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-purple-400">
+            <path d="M4 11a9 9 0 0 1 9 9"/>
+            <path d="M4 4a16 16 0 0 1 16 16"/>
+            <circle cx="5" cy="19" r="1"/>
+          </svg>
+        );
+      default:
+        return (
+          <svg {...iconProps} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-400">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        );
+    }
+  };
+
+  // Get days remaining
+  const getDaysRemaining = (endTime: string) => {
+    const end = new Date(endTime).getTime();
+    const now = Date.now();
+    const diff = end - now;
+    if (diff <= 0) return 'Ended';
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    if (days === 0) return 'Today';
+    if (days === 1) return '1 day';
+    return `${days} days`;
+  };
+
+  // Filter events by category
+  const filteredEvents = eventCategory === 'All' 
+    ? predictions.activeWorldEvents 
+    : predictions.activeWorldEvents.filter(e => e.category === eventCategory);
+
+  // Render Polymarket-style events tab
   const renderEventsTab = () => (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Event List */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-white">Active Events</h3>
-          
-          {predictions.activeWorldEvents.length === 0 ? (
-            <div className="bg-gray-800/50 rounded-xl p-6 text-center">
-              <p className="text-gray-400">No active events</p>
-              <p className="text-sm text-gray-500 mt-2">Check back soon for new predictions!</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {predictions.activeWorldEvents.map((event) => {
-                const isSelected = selectedEvent?.id === event.id;
-                
-                return (
-                  <button
-                    key={event.id}
-                    onClick={() => setSelectedEvent(event)}
-                    className={`w-full p-4 rounded-xl border transition-all duration-200 text-left ${
-                      isSelected
-                        ? 'bg-gray-700/50 border-purple-500'
-                        : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-medium text-white">{event.title}</span>
-                      {/* Real-time countdown */}
-                      <CountdownDisplay endTime={event.end_time} />
-                    </div>
-                    <p className="text-sm text-gray-400 mt-1 line-clamp-2">{event.description}</p>
-                    <div className="mt-2 flex gap-2 flex-wrap">
-                      {(event.outcomes || []).map((outcome, idx) => (
-                        <span key={idx} className="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs">
-                          {outcome}
-                        </span>
-                      ))}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+      {/* Category Filter */}
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {['All', 'Crypto', 'Tech', 'Geopolitics', 'Finance', 'Sports', 'Culture', 'World'].map((cat) => (
+          <button
+            key={cat}
+            onClick={() => setEventCategory(cat)}
+            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
+              eventCategory === cat 
+                ? 'bg-cyan-500 text-white' 
+                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+            }`}
+          >
+            {cat}
+          </button>
+        ))}
+      </div>
+
+      {/* Events Grid - Polymarket Style */}
+      {filteredEvents.length === 0 ? (
+        <div className="bg-gray-800/50 rounded-xl p-12 text-center">
+          <CategoryIcon category="World" size={64} />
+          <p className="text-xl text-gray-400 mt-4">No events in this category</p>
+          <p className="text-sm text-gray-500 mt-2">Try selecting a different category</p>
         </div>
-        
-        {/* Event Prediction Panel */}
-        <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-lg font-semibold text-white mb-4">Predict Outcome</h3>
-          
-          {!walletAddress ? (
-            <div className="text-center py-8">
-              <p className="text-gray-400">Connect wallet to predict</p>
-            </div>
-          ) : !selectedEvent ? (
-            <div className="text-center py-8">
-              <p className="text-gray-400">Select an event to predict</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Selected Event Info */}
-              <div className="p-4 bg-gray-900/50 rounded-lg">
-                <h4 className="font-medium text-white">{selectedEvent.title}</h4>
-                <p className="text-sm text-gray-400 mt-1">{selectedEvent.description}</p>
-                <span className="inline-block mt-2 px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs">
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredEvents.map((event) => {
+            const yesOdds = getYesOdds(event);
+            const noOdds = yesOdds !== null ? 100 - yesOdds : null;
+            const hasBets = hasAnyBets(event);
+            const isSelected = selectedEvent?.id === event.id;
+            
+            return (
+              <div
+                key={event.id}
+                onClick={() => setSelectedEvent(event)}
+                className={`group bg-gray-800/70 rounded-xl border cursor-pointer transition-all duration-300 hover:border-cyan-500/50 hover:shadow-lg hover:shadow-cyan-500/10 hover:-translate-y-1 ${
+                  isSelected ? 'border-cyan-500 ring-2 ring-cyan-500/20' : 'border-gray-700'
+                }`}
+              >
+                {/* Card Header */}
+                <div className="p-4 pb-3">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <CategoryIcon category={event.category} size={28} />
+                    {hasBets ? (
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        yesOdds !== null && yesOdds >= 60 ? 'bg-green-500/20 text-green-400' :
+                        yesOdds !== null && yesOdds <= 40 ? 'bg-red-500/20 text-red-400' :
+                        'bg-yellow-500/20 text-yellow-400'
+                      }`}>
+                        {yesOdds}%
+                      </span>
+                    ) : (
+                      <span className="px-2 py-1 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 animate-pulse">
+                        NEW
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="font-semibold text-white text-sm leading-tight line-clamp-2 group-hover:text-cyan-400 transition-colors">
+                    {event.title}
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {event.category} • {getDaysRemaining(event.end_time)}
+                  </p>
+                </div>
+
+                {/* Odds Bar */}
+                <div className="px-4 pb-3">
+                  {hasBets ? (
+                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden flex">
+                      <div 
+                        className="bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-500"
+                        style={{ width: `${yesOdds}%` }}
+                      />
+                      <div 
+                        className="bg-gradient-to-r from-red-500 to-rose-400"
+                        style={{ width: `${noOdds}%` }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-cyan-500/30 to-purple-500/30 animate-pulse" style={{ width: '100%' }} />
+                    </div>
+                  )}
+                </div>
+
+                {/* Yes/No Buttons */}
+                <div className="px-4 pb-4 flex gap-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedEvent(event);
+                    }}
+                    disabled={!walletAddress || isPlacingPrediction}
+                    className="flex-1 py-2.5 bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 hover:border-green-500/50 rounded-lg text-green-400 font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {hasBets ? `Yes ${yesOdds}¢` : 'Yes'}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedEvent(event);
+                    }}
+                    disabled={!walletAddress || isPlacingPrediction}
+                    className="flex-1 py-2.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 hover:border-red-500/50 rounded-lg text-red-400 font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {hasBets ? `No ${noOdds}¢` : 'No'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Selected Event Detail Panel */}
+      {selectedEvent && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedEvent(null)}>
+          <div 
+            className="bg-gray-900 rounded-2xl max-w-lg w-full border border-gray-700 shadow-2xl max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="p-6 border-b border-gray-800">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <CategoryIcon category={selectedEvent.category} size={32} />
+                  {hasAnyBets(selectedEvent) ? (
+                    <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                      (getYesOdds(selectedEvent) || 50) >= 50 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                    }`}>
+                      {getYesOdds(selectedEvent)}% chance
+                    </span>
+                  ) : (
+                    <span className="px-3 py-1 rounded-full text-sm font-bold bg-cyan-500/20 text-cyan-400 animate-pulse">
+                      Be first to predict!
+                    </span>
+                  )}
+                </div>
+                <button 
+                  onClick={() => setSelectedEvent(null)}
+                  className="text-gray-400 hover:text-white text-2xl leading-none p-2 hover:bg-gray-800 rounded-lg transition-colors"
+                >
+                  ×
+                </button>
+              </div>
+              <h2 className="text-xl font-bold text-white mt-4">{selectedEvent.title}</h2>
+              <p className="text-gray-400 text-sm mt-2">{selectedEvent.description}</p>
+              <div className="flex gap-2 mt-3">
+                <span className="px-2 py-1 bg-gray-800 rounded text-xs text-gray-400">
                   {selectedEvent.category}
                 </span>
-              </div>
-              
-              {/* Amount Selection */}
-              <div>
-                <label className="text-sm text-gray-400 block mb-2">Stake Amount</label>
-                <div className="flex gap-2 flex-wrap items-center">
-                  {PREDICTION_AMOUNTS.map((amount) => (
-                    <button
-                      key={amount}
-                      onClick={() => setPredictionAmount(amount)}
-                      className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                        predictionAmount === amount && !document.activeElement?.classList.contains('custom-stake')
-                          ? 'bg-purple-500 text-white'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      🪙 {amount}
-                    </button>
-                  ))}
-                  <div className="flex items-center gap-1 bg-gray-700 rounded-lg px-2">
-                    <span className="text-gray-400">🪙</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10000"
-                      placeholder="Custom"
-                      className="custom-stake w-20 bg-transparent text-white py-2 outline-none text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        if (val > 0) setPredictionAmount(val);
-                      }}
-                      onFocus={(e) => {
-                        if (e.target.value === '') {
-                          setPredictionAmount(0);
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Your balance: 🪙 {predictions.coinBalance?.balance || 0}</p>
-              </div>
-              
-              {/* Outcome Buttons */}
-              <div className="space-y-2 mt-4">
-                <label className="text-sm text-gray-400 block">Choose Outcome</label>
-                {(selectedEvent.outcomes || []).map((outcome, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleEventPrediction(outcome)}
-                    disabled={isPlacingPrediction || (predictions.coinBalance?.balance || 0) < predictionAmount}
-                    className="w-full py-3 bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-700 rounded-xl text-white font-medium transition-all duration-200"
-                  >
-                    {outcome}
-                  </button>
-                ))}
+                <span className="px-2 py-1 bg-gray-800 rounded text-xs text-gray-400">
+                  Ends: {getDaysRemaining(selectedEvent.end_time)}
+                </span>
               </div>
             </div>
-          )}
+
+            {/* Prediction Section */}
+            <div className="p-6">
+              {!walletAddress ? (
+                <div className="text-center py-6">
+                  <p className="text-gray-400 mb-4">Connect wallet to make predictions</p>
+                </div>
+              ) : (
+                <>
+                  {/* Total Volume or "Be First" message */}
+                  {hasAnyBets(selectedEvent) ? (
+                    <div className="bg-gray-800/50 rounded-xl p-3 mb-4 text-center">
+                      <p className="text-xs text-gray-500">Total Volume</p>
+                      <p className="text-lg font-bold text-cyan-400">
+                        🪙 {((selectedEvent.total_yes || 0) + (selectedEvent.total_no || 0)).toLocaleString()}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/30 rounded-xl p-4 mb-4 text-center">
+                      <p className="text-cyan-400 font-semibold">🎯 No predictions yet!</p>
+                      <p className="text-xs text-gray-400 mt-1">Be the first to predict and set the odds</p>
+                    </div>
+                  )}
+                  
+                  {/* Pool Stats */}
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center">
+                      <p className="text-green-400 text-2xl font-bold">{hasAnyBets(selectedEvent) ? `${getYesOdds(selectedEvent)}%` : '-'}</p>
+                      <p className="text-green-400/70 text-sm">Yes odds</p>
+                      <p className="text-xs text-gray-500 mt-1">🪙 {(selectedEvent.total_yes || 0).toLocaleString()} staked</p>
+                    </div>
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-center">
+                      <p className="text-red-400 text-2xl font-bold">{hasAnyBets(selectedEvent) ? `${100 - (getYesOdds(selectedEvent) || 50)}%` : '-'}</p>
+                      <p className="text-red-400/70 text-sm">No odds</p>
+                      <p className="text-xs text-gray-500 mt-1">🪙 {(selectedEvent.total_no || 0).toLocaleString()} staked</p>
+                    </div>
+                  </div>
+
+                  {/* Amount Selection */}
+                  <div className="mb-4">
+                    <label className="text-sm text-gray-400 block mb-2">Stake Amount</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {PREDICTION_AMOUNTS.map((amount) => (
+                        <button
+                          key={amount}
+                          onClick={() => setPredictionAmount(amount)}
+                          className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                            predictionAmount === amount
+                              ? 'bg-cyan-500 text-white'
+                              : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                          }`}
+                        >
+                          🪙 {amount}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Your balance: 🪙 {predictions.coinBalance?.balance || 0}
+                    </p>
+                  </div>
+
+                  {/* Yes/No Buttons */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={() => handleEventPrediction('YES')}
+                      disabled={isPlacingPrediction || (predictions.coinBalance?.balance || 0) < predictionAmount}
+                      className="py-4 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-400 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 rounded-xl text-white font-bold text-lg transition-all shadow-lg shadow-green-500/20 hover:shadow-green-500/40 disabled:shadow-none"
+                    >
+                      {isPlacingPrediction ? '⏳ Signing...' : '✓ Yes'}
+                    </button>
+                    <button
+                      onClick={() => handleEventPrediction('NO')}
+                      disabled={isPlacingPrediction || (predictions.coinBalance?.balance || 0) < predictionAmount}
+                      className="py-4 bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-400 hover:to-rose-500 disabled:from-gray-600 disabled:to-gray-700 rounded-xl text-white font-bold text-lg transition-all shadow-lg shadow-red-500/20 hover:shadow-red-500/40 disabled:shadow-none"
+                    >
+                      {isPlacingPrediction ? '⏳ Signing...' : '✗ No'}
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-gray-500 text-center mt-4">
+                    🔒 Requires wallet signature • Win up to {getYesOdds(selectedEvent) ? Math.round(predictionAmount * 100 / getYesOdds(selectedEvent)!) : '∞'} coins
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Resolved Events Section */}
+      {predictions.resolvedWorldEvents && predictions.resolvedWorldEvents.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
+            Recently Resolved
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {predictions.resolvedWorldEvents.slice(0, 6).map((event) => (
+              <div key={event.id} className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <CategoryIcon category={event.category} size={24} />
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${
+                    event.outcome ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+                  }`}>
+                    {event.outcome ? '✓ YES' : '✗ NO'}
+                  </span>
+                </div>
+                <h4 className="text-sm font-medium text-gray-300 line-clamp-2">{event.title}</h4>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 

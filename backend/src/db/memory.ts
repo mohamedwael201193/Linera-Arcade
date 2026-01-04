@@ -993,32 +993,156 @@ export const memoryDb = {
     
     if (hasActiveBTC && hasActiveETH) {
       console.log('✅ Active rounds already exist for BTC and ETH, skipping seed');
-      return;
+    } else {
+      // Create crypto rounds with real prices from Binance (only for missing assets)
+      try {
+        const binanceService = await import('../services/binance.js').then(m => m.binanceService);
+        
+        if (!hasActiveBTC) {
+          const btcPrice = await binanceService.getBTCPrice();
+          await this.createCryptoRound({ asset: 'BTC', start_price: btcPrice.price, duration_secs: 300 });
+          console.log(`✅ Created BTC round at $${btcPrice.price/100}`);
+        }
+        
+        if (!hasActiveETH) {
+          const ethPrice = await binanceService.getETHPrice();
+          await this.createCryptoRound({ asset: 'ETH', start_price: ethPrice.price, duration_secs: 300 });
+          console.log(`✅ Created ETH round at $${ethPrice.price/100}`);
+        }
+      } catch (err) {
+        console.error('⚠️ Failed to fetch Binance prices, creating rounds with fallback:', err);
+        if (!hasActiveBTC) {
+          await this.createCryptoRound({ asset: 'BTC', start_price: 9500000, duration_secs: 300 });
+        }
+        if (!hasActiveETH) {
+          await this.createCryptoRound({ asset: 'ETH', start_price: 350000, duration_secs: 300 });
+        }
+      }
     }
     
-    // Create crypto rounds with real prices from Binance (only for missing assets)
-    try {
-      const binanceService = await import('../services/binance.js').then(m => m.binanceService);
+    // Seed Polymarket-style world events (only if none exist)
+    const activeEvents = await this.getActiveWorldEvents();
+    if (activeEvents.length === 0) {
+      console.log('📰 Seeding Polymarket-style trending events...');
       
-      if (!hasActiveBTC) {
-        const btcPrice = await binanceService.getBTCPrice();
-        await this.createCryptoRound({ asset: 'BTC', start_price: btcPrice.price, duration_secs: 300 });
-        console.log(`✅ Created BTC round at $${btcPrice.price/100}`);
+      // Trending events like Polymarket - long term predictions (14 days to 1 month)
+      const trendingEvents = [
+        // Politics
+        {
+          title: "Will Bitcoin hit $100,000 by end of January 2026?",
+          description: "Resolves YES if Bitcoin price reaches $100,000 USD on any major exchange (Binance, Coinbase) before January 31, 2026 11:59 PM UTC.",
+          category: "Crypto",
+          days: 27, // ~1 month
+          image: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
+          yesOdds: 35, // 35% chance
+        },
+        {
+          title: "Will Ethereum reach $5,000 by end of February 2026?",
+          description: "Resolves YES if Ethereum price reaches $5,000 USD on any major exchange before February 28, 2026 11:59 PM UTC.",
+          category: "Crypto",
+          days: 55,
+          image: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+          yesOdds: 25,
+        },
+        {
+          title: "Will SpaceX Starship complete orbital flight by March 2026?",
+          description: "Resolves YES if SpaceX successfully completes a full orbital flight with Starship (launch, orbit, and controlled landing/splashdown) by March 31, 2026.",
+          category: "Tech",
+          days: 85,
+          image: "🚀",
+          yesOdds: 65,
+        },
+        {
+          title: "Will Apple announce AR Glasses in 2026?",
+          description: "Resolves YES if Apple officially announces a standalone AR glasses product (not Vision Pro) during any 2026 event or press release.",
+          category: "Tech",
+          days: 180,
+          image: "🍎",
+          yesOdds: 40,
+        },
+        {
+          title: "Will there be a Russia-Ukraine ceasefire by June 2026?",
+          description: "Resolves YES if both Russia and Ukraine officially agree to a ceasefire (temporary or permanent) by June 30, 2026.",
+          category: "Geopolitics",
+          days: 175,
+          image: "🕊️",
+          yesOdds: 30,
+        },
+        {
+          title: "Will the Fed cut interest rates in January 2026?",
+          description: "Resolves YES if the Federal Reserve announces an interest rate cut at the January 2026 FOMC meeting.",
+          category: "Finance",
+          days: 27,
+          image: "🏦",
+          yesOdds: 45,
+        },
+        {
+          title: "Will Solana reach $500 by end of Q1 2026?",
+          description: "Resolves YES if Solana (SOL) price reaches $500 USD on any major exchange before March 31, 2026.",
+          category: "Crypto",
+          days: 85,
+          image: "https://cryptologos.cc/logos/solana-sol-logo.png",
+          yesOdds: 20,
+        },
+        {
+          title: "Will AI generate a Billboard Hot 100 song by 2026?",
+          description: "Resolves YES if a song with AI-generated vocals or composition reaches the Billboard Hot 100 chart in 2026.",
+          category: "Culture",
+          days: 180,
+          image: "🎵",
+          yesOdds: 55,
+        },
+        {
+          title: "Will Tesla release a sub-$30,000 car in 2026?",
+          description: "Resolves YES if Tesla officially releases (available for customer delivery) a new vehicle model priced under $30,000 USD in 2026.",
+          category: "Tech",
+          days: 180,
+          image: "🚗",
+          yesOdds: 35,
+        },
+        {
+          title: "Will XRP win the SEC lawsuit appeal by mid-2026?",
+          description: "Resolves YES if Ripple (XRP) wins or settles favorably in any SEC appeal proceedings by June 30, 2026.",
+          category: "Crypto",
+          days: 175,
+          image: "⚖️",
+          yesOdds: 60,
+        },
+        {
+          title: "Will Manchester City win the Premier League 2025-26?",
+          description: "Resolves YES if Manchester City wins the English Premier League for the 2025-26 season.",
+          category: "Sports",
+          days: 150,
+          image: "⚽",
+          yesOdds: 55,
+        },
+        {
+          title: "Will a new COVID variant cause global restrictions in 2026?",
+          description: "Resolves YES if any country in the G20 reinstates significant COVID-19 restrictions (lockdowns, mask mandates, or travel bans) in 2026.",
+          category: "World",
+          days: 180,
+          image: "🦠",
+          yesOdds: 15,
+        },
+      ];
+      
+      for (const event of trendingEvents) {
+        const endTime = new Date(Date.now() + event.days * 24 * 60 * 60 * 1000);
+        
+        // Create the event with ZERO initial pools - real data only!
+        await this.createWorldEvent({
+          title: event.title,
+          description: event.description,
+          category: event.category,
+          end_time: endTime,
+        });
+        // No fake pools - total_yes and total_no start at 0
+        
+        console.log(`  ✅ Created event: "${event.title.substring(0, 50)}..."`);
       }
       
-      if (!hasActiveETH) {
-        const ethPrice = await binanceService.getETHPrice();
-        await this.createCryptoRound({ asset: 'ETH', start_price: ethPrice.price, duration_secs: 300 });
-        console.log(`✅ Created ETH round at $${ethPrice.price/100}`);
-      }
-    } catch (err) {
-      console.error('⚠️ Failed to fetch Binance prices, creating rounds with fallback:', err);
-      if (!hasActiveBTC) {
-        await this.createCryptoRound({ asset: 'BTC', start_price: 9500000, duration_secs: 300 });
-      }
-      if (!hasActiveETH) {
-        await this.createCryptoRound({ asset: 'ETH', start_price: 350000, duration_secs: 300 });
-      }
+      console.log(`✅ Seeded ${trendingEvents.length} trending world events`);
+      saveData();
     }
     
     console.log('✅ Backend initialized - Ready for real users!');

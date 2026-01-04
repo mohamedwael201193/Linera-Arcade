@@ -314,11 +314,11 @@ export const PLACE_CRYPTO_PREDICTION = `
 
 /**
  * Place a world event prediction
- * Note: Field names must match the Rust Operation enum: event_id, outcome, amount
+ * Note: Field names must match the Rust Operation enum: event_id, prediction (bool), amount
  */
 export const PLACE_EVENT_PREDICTION = `
-  mutation PlaceEventPrediction($event_id: Int!, $outcome: String!, $amount: Int!) {
-    placeEventPrediction(eventId: $event_id, outcome: $outcome, amount: $amount)
+  mutation PlaceEventPrediction($event_id: Int!, $prediction: Boolean!, $amount: Int!) {
+    placeEventPrediction(eventId: $event_id, prediction: $prediction, amount: $amount)
   }
 `;
 

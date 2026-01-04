@@ -508,13 +508,16 @@ export interface WorldEventEntry {
   title: string;
   description: string;
   category: string;
-  outcomes: string[];
-  correct_outcome: string | null;
-  start_time: string;
+  outcomes?: string[]; // Legacy - for backward compatibility
+  correct_outcome?: string | null;
   end_time: string;
+  start_time?: string;
   status: 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
-  image_url: string | null;
-  source: string | null;
+  outcome?: boolean | null; // YES = true, NO = false
+  total_yes: number;
+  total_no: number;
+  image_url?: string | null;
+  source?: string | null;
   created_at: string;
 }
 

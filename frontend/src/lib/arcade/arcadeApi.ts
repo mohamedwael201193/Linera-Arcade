@@ -558,7 +558,7 @@ class ArcadeApiClass {
    * 2. Syncs to backend
    * 
    * @param eventId - World event ID
-   * @param outcome - Predicted outcome
+   * @param outcome - Predicted outcome ('YES' or 'NO')
    * @param coinsStaked - Amount of coins to stake
    * @returns true if prediction was placed
    */
@@ -570,11 +570,14 @@ class ArcadeApiClass {
     console.log(`🌍 Placing event prediction: ${outcome} with ${coinsStaked} coins`);
     
     try {
+      // Convert outcome string to boolean (YES = true, NO = false)
+      const predictionBool = outcome.toUpperCase() === 'YES';
+      
       // Step 1: Submit to blockchain
-      // Variable names must match the GraphQL mutation: event_id, outcome, amount
+      // Variable names must match the GraphQL mutation: event_id, prediction (bool), amount
       await lineraAdapter.mutate<{ placeEventPrediction: boolean }>(
         PLACE_EVENT_PREDICTION,
-        { event_id: eventId, outcome, amount: coinsStaked }
+        { event_id: eventId, prediction: predictionBool, amount: coinsStaked }
       );
       
       console.log('✅ Event prediction placed on blockchain');
