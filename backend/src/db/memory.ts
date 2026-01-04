@@ -831,7 +831,7 @@ export const memoryDb = {
   async placeEventPrediction(input: {
     wallet_address: string;
     event_id: number;
-    prediction: boolean;
+    outcome: boolean;  // Changed from 'prediction' to match postgres.ts
     amount: number;
   }): Promise<Prediction | null> {
     const wallet = input.wallet_address.toLowerCase();
@@ -848,7 +848,7 @@ export const memoryDb = {
     const total = event.total_yes + event.total_no;
     let odds = 19000;
     if (total > 0) {
-      const poolForPrediction = input.prediction ? event.total_yes : event.total_no;
+      const poolForPrediction = input.outcome ? event.total_yes : event.total_no;
       if (poolForPrediction > 0) {
         const payoutPool = total * 9500 / 10000;
         odds = Math.floor((payoutPool * 10000) / poolForPrediction);
@@ -861,8 +861,8 @@ export const memoryDb = {
     player.coins -= input.amount;
     player.predictions_made++;
     
-    // Update event totals
-    if (input.prediction) {
+    // Update event totals - use input.outcome (true = YES, false = NO)
+    if (input.outcome) {
       event.total_yes += input.amount;
     } else {
       event.total_no += input.amount;
@@ -873,7 +873,7 @@ export const memoryDb = {
       wallet_address: wallet,
       prediction_type: 'EVENT',
       reference_id: input.event_id,
-      direction_or_outcome: input.prediction ? 1 : 0,
+      direction_or_outcome: input.outcome ? 1 : 0,
       amount: input.amount,
       odds_at_bet: odds,
       status: 'PENDING',
@@ -889,7 +889,7 @@ export const memoryDb = {
     await this.logActivity(wallet, player.username, 'PREDICTION_PLACED', {
       type: 'EVENT',
       eventTitle: event.title,
-      prediction: input.prediction ? 'YES' : 'NO',
+      prediction: input.outcome ? 'YES' : 'NO',
       amount: input.amount,
       odds: odds / 10000,
     });
