@@ -813,7 +813,7 @@ export function PredictionsPage() {
                   {/* Amount Selection */}
                   <div className="mb-4">
                     <label className="text-sm text-gray-400 block mb-2">Stake Amount</label>
-                    <div className="flex gap-2 flex-wrap">
+                    <div className="flex gap-2 flex-wrap mb-3">
                       {PREDICTION_AMOUNTS.map((amount) => (
                         <button
                           key={amount}
@@ -827,6 +827,23 @@ export function PredictionsPage() {
                           🪙 {amount}
                         </button>
                       ))}
+                    </div>
+                    {/* Custom Amount Input */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400">🪙</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max={predictions.coinBalance?.balance || 1000}
+                        value={predictionAmount}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 0;
+                          setPredictionAmount(Math.min(Math.max(1, val), predictions.coinBalance?.balance || 1000));
+                        }}
+                        className="w-24 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:border-cyan-500 focus:outline-none"
+                        placeholder="Custom"
+                      />
+                      <span className="text-xs text-gray-500">Custom amount</span>
                     </div>
                     <p className="text-xs text-gray-500 mt-2">
                       Your balance: 🪙 {predictions.coinBalance?.balance || 0}

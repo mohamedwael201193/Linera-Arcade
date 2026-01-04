@@ -760,13 +760,18 @@ export const postgresDb = {
       }
     }
 
-    // Check for data corruption: event totals that don't match actual prediction amounts
-    // This detects the YES-stored-as-NO bug
+    // FORCE RESET: One-time fix for YES-stored-as-NO bug (remove after Jan 6, 2026)
+    // Check if we need to reset by looking for the corruption marker
+    const corruptionCheck = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM world_events WHERE total_yes > 0 OR total_no > 0`
+    );
+    const hasAnyBets = parseInt(corruptionCheck.rows[0]?.count || '0') > 0;
+    
+    // Also check if predictions don't match totals (the actual corruption test)
     const activeEvents = await this.getActiveWorldEvents();
-    let hasCorruptedData = false;
+    let needsReset = false;
     
     for (const event of activeEvents) {
-      // Get actual prediction sums from the predictions table
       const actualTotals = await query<{ yes_sum: string; no_sum: string }>(
         `SELECT 
            COALESCE(SUM(CASE WHEN direction_or_outcome = 1 THEN amount ELSE 0 END), 0) as yes_sum,
@@ -784,12 +789,13 @@ export const postgresDb = {
         console.log(`⚠️ Event #${event.id} "${event.title.substring(0, 30)}..." has mismatched totals:`);
         console.log(`   Stored: yes=${event.total_yes}, no=${event.total_no}`);
         console.log(`   Actual: yes=${actualYes}, no=${actualNo}`);
-        hasCorruptedData = true;
+        needsReset = true;
+        break; // No need to check more, we'll reset everything
       }
     }
     
-    if (hasCorruptedData) {
-      console.log('🔄 Detected corrupted event data. Performing full reset...');
+    if (needsReset || (hasAnyBets && activeEvents.length > 0)) {
+      console.log('🔄 Detected corrupted event data or stale bets. Performing full reset...');
       await this.resetWorldEvents();
       console.log('✅ World events reset complete!');
     }
