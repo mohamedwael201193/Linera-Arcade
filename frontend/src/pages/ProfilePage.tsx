@@ -109,6 +109,10 @@ export function ProfilePage() {
       const result = await registerPlayer(newUsername);
       if (result) {
         setNewUsername('');
+        // Refresh player data to show profile instead of registration form
+        await refreshPlayer();
+        // Also refresh leaderboard to show new player
+        await refreshLeaderboard();
       }
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Registration failed');
