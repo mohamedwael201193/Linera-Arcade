@@ -57,6 +57,8 @@ export interface LineraConnection {
   chainId: string;
   address: string;
   signer: DynamicSigner;
+  /** Auto-signer address for session-based automatic signing */
+  autoSignerAddress: string;
 }
 
 /**
@@ -162,7 +164,8 @@ class LineraAdapterClass {
       await ensureWasmInitialized();
       
       // Step 1.5: Dynamically load @linera/client
-      const { Faucet, Client } = await getLineraClient();
+      const lineraModule = await getLineraClient();
+      const { Faucet, Client, signer: signerModule } = lineraModule;
       
       // Step 2: Create faucet connection
       console.log(`📡 Connecting to faucet: ${faucetUrl}`);
@@ -177,15 +180,36 @@ class LineraAdapterClass {
       const chainId = await faucet.claimChain(wallet, userAddress);
       console.log(`✅ Claimed chain: ${chainId}`);
       
-      // Step 5: Create signer from Dynamic wallet
-      const signer = new DynamicSigner(dynamicWallet);
+      // Step 5: Create signers for auto-signing
+      // - DynamicSigner: for user-initiated actions (requires wallet popup)
+      // - AutoSigner: random in-memory key for automatic signing (no popup)
+      const dynamicSigner = new DynamicSigner(dynamicWallet);
       
-      // Step 6: Create Linera client with wallet and signer
-      // Note: The Client constructor returns a Promise in wasm-bindgen
-      console.log('🔗 Creating Linera client...');
-      const clientResult = new Client(wallet, signer);
-      // Await the client creation (wasm-bindgen returns promise from constructor)
+      console.log('🔑 Setting up auto-signing...');
+      const autoSigner = signerModule.PrivateKey.createRandom();
+      const autoSignerAddress = autoSigner.address();
+      console.log(`   Auto-signer address: ${autoSignerAddress}`);
+      
+      // Combine signers: autoSigner first (for automatic ops), dynamic second (for user ops)
+      // Composite tries each signer in order until one has the key
+      const compositeSigner = new signerModule.Composite(autoSigner, dynamicSigner);
+      
+      // Step 6: Create Linera client with composite signer
+      console.log('🔗 Creating Linera client with auto-signing...');
+      const clientResult = new Client(wallet, compositeSigner);
       const client = await clientResult;
+      
+      // Step 7: Connect to chain and add auto-signer as owner
+      console.log('⛓️ Connecting to chain...');
+      const chain = await client.chain(chainId);
+      
+      // Add auto-signer as chain owner (requires ONE wallet signature)
+      console.log('✍️ Adding auto-signer as chain owner (one-time signature)...');
+      await chain.addOwner(autoSignerAddress);
+      
+      // Set auto-signer as default owner for automatic operations
+      await wallet.setOwner(chainId, autoSignerAddress);
+      console.log('✅ Auto-signing enabled!');
       
       // Store connection
       this.connection = {
@@ -194,12 +218,14 @@ class LineraAdapterClass {
         faucet,
         chainId,
         address: userAddress,
-        signer,
+        signer: dynamicSigner,
+        autoSignerAddress,
       };
       
-      console.log('✅ Connected to Linera successfully!');
+      console.log('✅ Connected to Linera successfully with auto-signing!');
       console.log(`   Chain ID: ${chainId}`);
       console.log(`   Address: ${userAddress}`);
+      console.log(`   Auto-Signer: ${autoSignerAddress}`);
       
       // Note: notifications are set up when connecting to application (on Chain, not Client)
       
@@ -382,6 +408,13 @@ class LineraAdapterClass {
    */
   getChainId(): string | null {
     return this.connection?.chainId ?? null;
+  }
+
+  /**
+   * Get auto-signer address (for session-based automatic signing)
+   */
+  getAutoSignerAddress(): string | null {
+    return this.connection?.autoSignerAddress ?? null;
   }
 
   /**
