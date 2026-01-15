@@ -303,6 +303,17 @@ export const CLAIM_DAILY_BONUS = `
 `;
 
 /**
+ * Create a new crypto prediction round ON-CHAIN
+ * This creates the round in the blockchain state so predictions can be placed
+ * Note: Field names must match the Rust Operation enum: asset, start_price, duration_secs
+ */
+export const CREATE_CRYPTO_ROUND = `
+  mutation CreateCryptoRound($asset: CryptoAsset!, $start_price: Int!, $duration_secs: Int!) {
+    createCryptoRound(asset: $asset, startPrice: $start_price, durationSecs: $duration_secs)
+  }
+`;
+
+/**
  * Place a crypto prediction (UP/DOWN)
  * Note: Field names must match the Rust Operation enum: round_id, direction, amount
  */

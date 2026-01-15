@@ -211,8 +211,35 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
     try {
       // Get Dynamic username for auto-registration if needed
       const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
-      // Use arcadeApi for on-chain signing
-      const success = await arcadeApi.placeCryptoPrediction(roundId, direction, coinsStaked, dynamicUsername);
+      
+      // Find the backend round data to pass to arcadeApi
+      // This allows arcadeApi to create an on-chain round if needed
+      const backendRound = cryptoRounds.find(r => r.id === roundId);
+      
+      // Calculate duration from start_time and end_time
+      let durationSecs = 300; // default 5 minutes
+      if (backendRound) {
+        const startTime = new Date(backendRound.start_time).getTime();
+        const endTime = new Date(backendRound.end_time).getTime();
+        durationSecs = Math.floor((endTime - startTime) / 1000);
+      }
+      
+      const backendRoundData = backendRound ? {
+        asset: backendRound.asset,
+        start_price: backendRound.start_price,
+        duration_secs: durationSecs
+      } : undefined;
+      
+      console.log(`🎰 Placing prediction on round ${roundId}, backend data:`, backendRoundData);
+      
+      // Use arcadeApi for on-chain signing - now with backend round data
+      const success = await arcadeApi.placeCryptoPrediction(
+        roundId, 
+        direction, 
+        coinsStaked, 
+        dynamicUsername,
+        backendRoundData
+      );
       if (success) {
         // Refresh user data and rounds after placing prediction
         await Promise.all([refreshCryptoRounds(), refreshUserData()]);
@@ -222,7 +249,7 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
       console.error('Failed to place crypto prediction:', err);
       return false;
     }
-  }, [walletAddress, user]);
+  }, [walletAddress, user, cryptoRounds]);
 
   const resolveCryptoRound = useCallback(async (roundId: number): Promise<CryptoRoundEntry | null> => {
     try {

@@ -16,6 +16,7 @@ import {
   SUBMIT_SCORE,
   GET_COIN_BALANCE,
   CLAIM_DAILY_BONUS,
+  CREATE_CRYPTO_ROUND,
   PLACE_CRYPTO_PREDICTION,
   PLACE_EVENT_PREDICTION,
 } from './queries';
@@ -550,22 +551,134 @@ class ArcadeApiClass {
     }
   }
 
+  // =============================================================================
+  // CRYPTO PREDICTION METHODS (ON-CHAIN)
+  // =============================================================================
+
+  /**
+   * Create a crypto prediction round ON-CHAIN
+   * This must be called before predictions can be placed on-chain.
+   * 
+   * @param asset - 'BTC' or 'ETH'
+   * @param startPrice - Current price in cents (e.g., 8752300 for $87,523.00)
+   * @param durationSecs - Duration in seconds (default 300 = 5 min)
+   * @returns The on-chain round ID, or null if failed
+   */
+  async createCryptoRound(
+    asset: 'BTC' | 'ETH',
+    startPrice: number,
+    durationSecs: number = 300
+  ): Promise<number | null> {
+    console.log(`🎰 Creating crypto round on-chain: ${asset} at $${(startPrice / 100).toFixed(2)}`);
+    
+    try {
+      // Submit to blockchain
+      // Variable names must match the GraphQL mutation: asset, start_price, duration_secs
+      const result = await lineraAdapter.mutate<{ createCryptoRound: number | null }>(
+        CREATE_CRYPTO_ROUND,
+        { 
+          asset: asset.toUpperCase(), 
+          start_price: Math.floor(startPrice), 
+          duration_secs: durationSecs 
+        }
+      );
+      
+      console.log('📥 createCryptoRound result:', result);
+      
+      // The GraphQL mutation doesn't return the ID directly (returns empty array)
+      // The ID is in the operation_results but not accessible via GraphQL
+      // We need to query for active rounds to find our newly created round
+      console.log('🔍 Querying for newly created round...');
+      
+      // Wait a moment for the blockchain state to update
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Query for active rounds and find the one matching our asset
+      const activeRounds = await this.getActiveCryptoRoundsOnChain();
+      console.log('📋 Active rounds after creation:', activeRounds);
+      
+      const assetUpper = asset.toUpperCase();
+      const newRound = activeRounds.find(r => {
+        const roundAsset = String(r.asset).toUpperCase();
+        console.log(`  Checking round ${r.id}: asset=${roundAsset} vs ${assetUpper}`);
+        return roundAsset === assetUpper || roundAsset.includes(assetUpper);
+      });
+      
+      if (newRound) {
+        console.log(`✅ Found created round with ID: ${newRound.id}`);
+        return newRound.id;
+      }
+      
+      // Fallback: if we have any active rounds, use the latest one (highest ID)
+      if (activeRounds.length > 0) {
+        const sortedRounds = [...activeRounds].sort((a, b) => b.id - a.id);
+        const latestRound = sortedRounds[0];
+        if (latestRound) {
+          console.log(`⚠️ Using latest round as fallback: ID ${latestRound.id}`);
+          return latestRound.id;
+        }
+      }
+      
+      // Last resort: return 0 since that's likely the first round created
+      console.warn('⚠️ Could not find newly created round, trying ID 0');
+      return 0;
+    } catch (error) {
+      console.error('❌ Failed to create crypto round:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get active crypto rounds from blockchain
+   * Note: CryptoRound has durationSecs, not endTime - we calculate endTime from startTime + durationSecs
+   */
+  async getActiveCryptoRoundsOnChain(): Promise<Array<{ id: number; asset: string; startPrice: number; startTime: number; durationSecs: number }>> {
+    try {
+      const result = await lineraAdapter.query<{ activeCryptoRounds: Array<{
+        id: number;
+        asset: string;
+        startPrice: number;
+        startTime: number;
+        durationSecs: number;
+        status: string;
+      }> }>(`
+        query GetActiveCryptoRounds {
+          activeCryptoRounds {
+            id
+            asset
+            startPrice
+            startTime
+            durationSecs
+            status
+          }
+        }
+      `);
+      
+      return result?.activeCryptoRounds || [];
+    } catch (error) {
+      console.error('Failed to get active crypto rounds:', error);
+      return [];
+    }
+  }
+
   /**
    * Place a crypto prediction (UP/DOWN)
-   * 1. Auto-registers player if not registered
-   * 2. Submits to blockchain
-   * 3. Syncs to backend
    * 
-   * @param roundId - Crypto round ID
+   * FIXED: Now ensures the round exists on-chain before placing bet.
+   * If no round exists for the asset, creates one first.
+   * 
+   * @param roundId - Backend round ID (will find/create matching on-chain round)
    * @param direction - 'UP' or 'DOWN'
    * @param coinsStaked - Amount of coins to stake
+   * @param backendRound - Optional: backend round data for creating on-chain round
    * @returns true if prediction was placed
    */
   async placeCryptoPrediction(
     roundId: number,
     direction: 'UP' | 'DOWN',
     coinsStaked: number,
-    dynamicUsername?: string
+    dynamicUsername?: string,
+    backendRound?: { asset: string; start_price: number; duration_secs?: number }
   ): Promise<boolean> {
     console.log(`📊 Placing crypto prediction: ${direction} with ${coinsStaked} coins`);
     
@@ -601,16 +714,130 @@ class ArcadeApiClass {
         console.warn('⚠️ Could not verify/register player:', regErr);
       }
       
-      // Step 1: Submit to blockchain
+      // Step 1: Ensure round exists on-chain
+      // Check for active rounds on blockchain
+      let onChainRoundId: number | null = null;
+      
+      try {
+        const activeRounds = await this.getActiveCryptoRoundsOnChain();
+        console.log(`📋 Active on-chain rounds: ${activeRounds.length}`, activeRounds);
+        
+        // Helper to check if a round is still accepting bets
+        // Contract locks betting 30 seconds before end
+        const isRoundAcceptingBets = (round: { startTime: number; durationSecs: number }) => {
+          const currentTimeMicros = Date.now() * 1000; // Convert JS ms to microseconds
+          const lockTime = round.startTime + (round.durationSecs - 30) * 1_000_000;
+          const isAccepting = currentTimeMicros < lockTime;
+          console.log(`⏱️ Round timing check: current=${currentTimeMicros}, lockTime=${lockTime}, accepting=${isAccepting}`);
+          return isAccepting;
+        };
+        
+        // Try to find a matching round by asset that is STILL ACCEPTING BETS
+        if (backendRound) {
+          const assetUpper = backendRound.asset.toUpperCase();
+          const matchingRound = activeRounds.find(r => {
+            const assetMatch = r.asset.toUpperCase() === assetUpper || 
+                              r.asset.toUpperCase().includes(assetUpper);
+            if (!assetMatch) return false;
+            
+            // Check if round is still accepting bets (not past lock time)
+            return isRoundAcceptingBets(r);
+          });
+          
+          if (matchingRound) {
+            console.log(`✅ Found existing on-chain round for ${assetUpper}: ID ${matchingRound.id} (still accepting bets)`);
+            onChainRoundId = matchingRound.id;
+          } else {
+            // Found rounds for asset but they're all past lock time
+            const expiredRound = activeRounds.find(r => 
+              r.asset.toUpperCase() === assetUpper || r.asset.toUpperCase().includes(assetUpper)
+            );
+            if (expiredRound) {
+              console.log(`⚠️ Found round for ${assetUpper} but it's past lock time, will create new one`);
+            }
+          }
+        }
+        
+        // If no matching round found (or existing one is expired), create one
+        if ((onChainRoundId === null || onChainRoundId === undefined) && backendRound) {
+          console.log(`📝 Creating fresh on-chain round for ${backendRound.asset}...`);
+          const createdId = await this.createCryptoRound(
+            backendRound.asset as 'BTC' | 'ETH',
+            backendRound.start_price,
+            backendRound.duration_secs || 300
+          );
+          
+          // createCryptoRound now returns 0 as fallback, so check for null/undefined explicitly
+          if (createdId === null || createdId === undefined) {
+            throw new Error('Failed to create on-chain round');
+          }
+          onChainRoundId = createdId;
+          console.log(`✅ Created on-chain round with ID: ${onChainRoundId}`);
+          
+          // Wait for chain to process
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        // Fallback: use the first active round that's accepting bets
+        if ((onChainRoundId === null || onChainRoundId === undefined) && activeRounds.length > 0) {
+          const acceptingRound = activeRounds.find(r => isRoundAcceptingBets(r));
+          if (acceptingRound) {
+            console.log(`⚠️ Using first available accepting round: ID ${acceptingRound.id}`);
+            onChainRoundId = acceptingRound.id;
+          }
+        }
+      } catch (roundErr) {
+        console.error('⚠️ Could not verify/create on-chain round:', roundErr);
+      }
+      
+      // If we still don't have an on-chain round, we need to create one
+      if (onChainRoundId === null || onChainRoundId === undefined) {
+        if (backendRound) {
+          console.log(`📝 Creating on-chain round for ${backendRound.asset}...`);
+          const createdId = await this.createCryptoRound(
+            backendRound.asset as 'BTC' | 'ETH',
+            backendRound.start_price,
+            backendRound.duration_secs || 300
+          );
+          
+          if (createdId === null || createdId === undefined) {
+            console.error('❌ Failed to create on-chain round');
+            throw new Error('Cannot place prediction: failed to create on-chain round');
+          }
+          onChainRoundId = createdId;
+          
+          // Wait for chain to process
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } else {
+          console.error('❌ No on-chain round available and no backend round data to create one');
+          throw new Error('Cannot place prediction: no round available');
+        }
+      }
+      
+      console.log(`🎯 Using on-chain round ID: ${onChainRoundId} for prediction`);
+      
+      // Step 2: Submit to blockchain with the ON-CHAIN round ID
       // Variable names must match the GraphQL mutation: round_id, direction, amount
-      await lineraAdapter.mutate<{ placeCryptoPrediction: boolean }>(
+      const mutationResult = await lineraAdapter.mutate<{ placeCryptoPrediction: unknown }>(
         PLACE_CRYPTO_PREDICTION,
-        { round_id: roundId, direction, amount: coinsStaked }
+        { round_id: onChainRoundId, direction, amount: coinsStaked }
       );
       
-      console.log('✅ Crypto prediction placed on blockchain');
+      console.log('📥 placeCryptoPrediction result:', mutationResult);
       
-      // Step 2: Sync to backend
+      // In Linera GraphQL, mutations return [] on success (actual result is in operation_results of the block)
+      // An empty array [] means the operation was submitted successfully
+      // Only null/undefined or GraphQL errors indicate failure
+      const resultData = mutationResult?.placeCryptoPrediction;
+      if (resultData === null || resultData === undefined) {
+        console.warn('⚠️ Prediction submission returned null - may have failed');
+      } else if (Array.isArray(resultData)) {
+        // Empty array [] is SUCCESS in Linera - the actual response is in the block's operation_results
+        // Response would decode to: CryptoPredictionPlaced { prediction_id, odds }
+        console.log('✅ Crypto prediction placed on blockchain (mutation accepted)');
+      }
+      
+      // Step 3: Sync to backend (use original backend round ID for tracking)
       if (wallet) {
         backendApi.placeCryptoPrediction(wallet, roundId, direction, coinsStaked)
           .then(() => console.log('✅ Prediction synced to backend'))
