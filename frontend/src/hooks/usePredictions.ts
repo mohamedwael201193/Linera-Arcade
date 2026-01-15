@@ -9,8 +9,31 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core';
 import { backendApi, CryptoPrice, CryptoRoundEntry, WorldEventEntry, PredictionEntry, CoinBalanceEntry, ActivityLogEntry } from '../lib/api/backendApi';
 import { arcadeApi } from '../lib/arcade/arcadeApi';
+
+/**
+ * Get username from Dynamic Wallet user profile
+ */
+function getDynamicUsername(user: Record<string, unknown> | null): string | undefined {
+  if (!user) return undefined;
+  
+  if (user.alias && typeof user.alias === 'string') {
+    return user.alias;
+  }
+  
+  const metadata = user.metadata as Record<string, unknown> | undefined;
+  if (metadata?.username && typeof metadata.username === 'string') {
+    return metadata.username;
+  }
+  
+  if (user.firstName && typeof user.firstName === 'string') {
+    return user.firstName;
+  }
+  
+  return undefined;
+}
 
 // =============================================================================
 // TYPES
@@ -83,6 +106,9 @@ export interface PredictionActions {
 // =============================================================================
 
 export function usePredictions(walletAddress: string | null): PredictionState & PredictionActions {
+  // Get Dynamic user for username
+  const { user } = useDynamicContext();
+  
   // =============================================================================
   // STATE
   // =============================================================================
@@ -183,8 +209,10 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
   ): Promise<boolean> => {
     if (!walletAddress) return false;
     try {
+      // Get Dynamic username for auto-registration if needed
+      const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
       // Use arcadeApi for on-chain signing
-      const success = await arcadeApi.placeCryptoPrediction(roundId, direction, coinsStaked);
+      const success = await arcadeApi.placeCryptoPrediction(roundId, direction, coinsStaked, dynamicUsername);
       if (success) {
         // Refresh user data and rounds after placing prediction
         await Promise.all([refreshCryptoRounds(), refreshUserData()]);
@@ -194,7 +222,7 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
       console.error('Failed to place crypto prediction:', err);
       return false;
     }
-  }, [walletAddress]);
+  }, [walletAddress, user]);
 
   const resolveCryptoRound = useCallback(async (roundId: number): Promise<CryptoRoundEntry | null> => {
     try {

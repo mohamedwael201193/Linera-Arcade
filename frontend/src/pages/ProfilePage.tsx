@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useDynamicContext } from '@dynamic-labs/sdk-react-core';
 import { User, AlertCircle, Wallet, Loader2, Trophy, Gamepad2, Sparkles, Link as LinkIcon, RefreshCw, CheckCircle, Gift, Coins } from 'lucide-react';
@@ -6,8 +6,47 @@ import { useLineraConnection, useArcade, useLeaderboard, usePredictions } from '
 import { levelProgress, xpForLevel, formatCoins } from '../types';
 import { arcadeApi } from '../lib/arcade';
 
+/**
+ * Get username from Dynamic Wallet user profile
+ * Dynamic stores custom fields directly on user object when enabled in dashboard
+ */
+function getDynamicUsername(user: Record<string, unknown> | null): string | undefined {
+  if (!user) return undefined;
+  
+  // Debug: log the entire user object to see its structure
+  console.log('🔍 Dynamic user object:', JSON.stringify(user, null, 2));
+  
+  // Check direct username field (from Dynamic Dashboard "Username" toggle)
+  if (user.username && typeof user.username === 'string') {
+    console.log('✅ Found username field:', user.username);
+    return user.username;
+  }
+  
+  // Check alias field
+  if (user.alias && typeof user.alias === 'string') {
+    console.log('✅ Found alias field:', user.alias);
+    return user.alias;
+  }
+  
+  // Check metadata.username (alternative location)
+  const metadata = user.metadata as Record<string, unknown> | undefined;
+  if (metadata?.username && typeof metadata.username === 'string') {
+    console.log('✅ Found metadata.username:', metadata.username);
+    return metadata.username;
+  }
+  
+  // Check firstName as fallback
+  if (user.firstName && typeof user.firstName === 'string') {
+    console.log('✅ Found firstName:', user.firstName);
+    return user.firstName;
+  }
+  
+  console.log('⚠️ No username found in Dynamic user object');
+  return undefined;
+}
+
 export function ProfilePage() {
-  const { primaryWallet } = useDynamicContext();
+  const { primaryWallet, user } = useDynamicContext();
   const { 
     isConnecting, 
     isAppConnected, 
@@ -20,6 +59,7 @@ export function ProfilePage() {
     isRegistered, 
     registerPlayer, 
     refreshPlayer,
+    isLoading: isLoadingPlayer,
     error: arcadeError
   } = useArcade();
   const { leaderboard, refresh: refreshLeaderboard } = useLeaderboard();
@@ -32,8 +72,53 @@ export function ProfilePage() {
   const [syncSuccess, setSyncSuccess] = useState(false);
   const [isClaimingBonus, setIsClaimingBonus] = useState(false);
   const [bonusMessage, setBonusMessage] = useState<string | null>(null);
+  const [isAutoRegistering, setIsAutoRegistering] = useState(false);
 
   const error = localError || arcadeError || connectionError;
+  
+  // Get Dynamic username
+  const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+  
+  // Debug: log the state
+  console.log('📊 ProfilePage state:', {
+    isAppConnected,
+    isRegistered,
+    isLoadingPlayer,
+    dynamicUsername,
+    isAutoRegistering,
+    isSubmitting,
+    user: user ? 'present' : 'null'
+  });
+  
+  // Auto-register with Dynamic username if not registered
+  useEffect(() => {
+    const autoRegister = async () => {
+      console.log('🔄 Auto-register check:', {
+        isAppConnected,
+        isRegistered,
+        isLoadingPlayer,
+        dynamicUsername,
+        isAutoRegistering,
+        isSubmitting
+      });
+      
+      if (isAppConnected && !isRegistered && !isLoadingPlayer && dynamicUsername && !isAutoRegistering && !isSubmitting) {
+        console.log(`🔄 Auto-registering with Dynamic username: ${dynamicUsername}`);
+        setIsAutoRegistering(true);
+        try {
+          await registerPlayer(dynamicUsername);
+          await refreshPlayer();
+          console.log('✅ Auto-registered successfully!');
+        } catch (err) {
+          console.error('Auto-registration failed:', err);
+        } finally {
+          setIsAutoRegistering(false);
+        }
+      }
+    };
+    
+    autoRegister();
+  }, [isAppConnected, isRegistered, isLoadingPlayer, dynamicUsername, isAutoRegistering, isSubmitting, registerPlayer, refreshPlayer]);
 
   // Get player rank from leaderboard
   const playerRank = player && leaderboard.length > 0
@@ -194,7 +279,28 @@ export function ProfilePage() {
   }
 
   // Registration form (not registered yet)
+  // If Dynamic username exists, show auto-registering state
   if (!isRegistered || !player) {
+    // Auto-registering with Dynamic username
+    if (dynamicUsername && (isAutoRegistering || isLoadingPlayer)) {
+      return (
+        <div className="max-w-md mx-auto py-12">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="arcade-card rounded-xl p-8 text-center"
+          >
+            <Loader2 className="w-16 h-16 text-neon-cyan mx-auto mb-6 animate-spin" />
+            <h2 className="font-arcade text-xl mb-2">SETTING UP PROFILE</h2>
+            <p className="text-gray-400 mb-6">
+              Registering as <span className="text-neon-pink font-bold">{dynamicUsername}</span> on the blockchain...
+            </p>
+          </motion.div>
+        </div>
+      );
+    }
+    
+    // Manual registration form (fallback if no Dynamic username)
     return (
       <div className="max-w-md mx-auto py-12">
         <motion.div
@@ -213,7 +319,7 @@ export function ProfilePage() {
           <div className="bg-arcade-darker rounded-lg p-3 mb-6">
             <p className="text-gray-500 text-xs mb-1">CONNECTED WALLET</p>
             <p className="font-mono text-neon-cyan text-sm">
-              {formatAddress(primaryWallet.address || '')}
+              {formatAddress(primaryWallet?.address || '')}
             </p>
           </div>
 

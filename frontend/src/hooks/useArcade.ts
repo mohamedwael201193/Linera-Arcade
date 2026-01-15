@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core';
 import { useLineraConnection } from './useLineraConnection';
 import { arcadeApi, type Player, type GameType } from '../lib/arcade';
 
@@ -38,9 +39,38 @@ export interface ArcadeState {
 }
 
 /**
+ * Get username from Dynamic Wallet user profile
+ * Checks alias first, then metadata.username, then firstName
+ */
+function getDynamicUsername(user: Record<string, unknown> | null): string | undefined {
+  if (!user) return undefined;
+  
+  // Check alias first (most common)
+  if (user.alias && typeof user.alias === 'string') {
+    return user.alias;
+  }
+  
+  // Check metadata.username (custom field from Dynamic Dashboard)
+  const metadata = user.metadata as Record<string, unknown> | undefined;
+  if (metadata?.username && typeof metadata.username === 'string') {
+    return metadata.username;
+  }
+  
+  // Fallback to firstName if available
+  if (user.firstName && typeof user.firstName === 'string') {
+    return user.firstName;
+  }
+  
+  return undefined;
+}
+
+/**
  * Hook for player and score operations
  */
 export function useArcade(): ArcadeState {
+  // Get Dynamic user for username
+  const { user } = useDynamicContext();
+  
   // Get connection state
   const { 
     isConnected, 
@@ -58,6 +88,7 @@ export function useArcade(): ArcadeState {
   
   /**
    * Load player data from blockchain
+   * If player not found but Dynamic username exists, auto-register
    */
   const loadPlayer = useCallback(async () => {
     if (!isAppConnected || !walletAddress) {
@@ -69,6 +100,26 @@ export function useArcade(): ArcadeState {
     
     try {
       const playerData = await arcadeApi.getPlayer(walletAddress);
+      
+      // If player not found, check if we have a Dynamic username to auto-register
+      if (!playerData) {
+        const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+        if (dynamicUsername) {
+          console.log(`🔄 Player not found, auto-registering with Dynamic username: ${dynamicUsername}`);
+          try {
+            await arcadeApi.registerPlayer(dynamicUsername);
+            console.log('✅ Auto-registered with Dynamic username!');
+            // Fetch the newly registered player
+            const newPlayerData = await arcadeApi.getPlayer(walletAddress);
+            setPlayer(newPlayerData);
+            return;
+          } catch (regErr) {
+            console.warn('⚠️ Auto-registration failed:', regErr);
+            // Fall through to set player as null
+          }
+        }
+      }
+      
       setPlayer(playerData);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load player';
@@ -77,7 +128,7 @@ export function useArcade(): ArcadeState {
     } finally {
       setIsLoading(false);
     }
-  }, [isAppConnected, walletAddress]);
+  }, [isAppConnected, walletAddress, user]);
   
   /**
    * Register a new player
@@ -132,8 +183,10 @@ export function useArcade(): ArcadeState {
     setError(null);
     
     try {
-      console.log(`🎮 Submitting score: ${score} for ${gameType}`);
-      await arcadeApi.submitScore(gameType as GameType, score, bonusData);
+      // Get Dynamic username for auto-registration if needed
+      const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+      console.log(`🎮 Submitting score: ${score} for ${gameType} (Dynamic username: ${dynamicUsername || 'none'})`);
+      await arcadeApi.submitScore(gameType as GameType, score, bonusData, dynamicUsername);
       
       // Refresh player data to get updated XP
       await loadPlayer();
@@ -148,7 +201,7 @@ export function useArcade(): ArcadeState {
     } finally {
       setIsSubmitting(false);
     }
-  }, [isAppConnected, player, loadPlayer]);
+  }, [isAppConnected, player, loadPlayer, user]);
   
   /**
    * Refresh player data

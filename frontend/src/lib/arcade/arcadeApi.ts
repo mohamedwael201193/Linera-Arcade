@@ -95,6 +95,7 @@ class ArcadeApiClass {
    * Get a player by wallet address
    * First tries backend, falls back to blockchain for own chain data.
    * Auto-syncs to backend if player exists on blockchain but not on backend.
+   * IMPORTANT: For blockchain queries, uses autoSignerAddress (what contract sees)
    * 
    * @param wallet - Wallet address (0x...)
    * @returns Player or null if not registered
@@ -120,10 +121,14 @@ class ArcadeApiClass {
     }
     
     // Fall back to blockchain query (own chain)
+    // IMPORTANT: Use autoSignerAddress because that's what the contract sees
     try {
+      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
+      const queryAddress = autoSignerAddress || normalizedWallet;
+      
       const result = await lineraAdapter.query<PlayerResponse>(
         GET_PLAYER,
-        { wallet: normalizedWallet }
+        { wallet: queryAddress }
       );
       
       if (result.player) {
@@ -294,20 +299,56 @@ class ArcadeApiClass {
 
   /**
    * Submit a game score
-   * 1. Submits to blockchain (for authenticity and XP calculation)
-   * 2. Syncs to backend (for global leaderboard)
+   * 1. Auto-registers player if not registered
+   * 2. Submits to blockchain (for authenticity and XP calculation)
+   * 3. Syncs to backend (for global leaderboard)
    * 
    * @param gameType - Type of game played
    * @param score - Raw score achieved
    * @param bonusData - Optional bonus data (varies by game)
+   * @param dynamicUsername - Optional username from Dynamic Wallet for auto-registration
    * @returns true if score submission was initiated
    */
   async submitScore(
     gameType: GameType,
     score: number,
-    bonusData?: number
+    bonusData?: number,
+    dynamicUsername?: string
   ): Promise<boolean> {
     console.log(`🎮 Submitting score: ${score} for ${gameType}`);
+    
+    const wallet = lineraAdapter.getAddress();
+    if (!wallet) {
+      throw new Error('No wallet connected');
+    }
+    
+    // Step 0: Check if player is registered, if not auto-register
+    // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
+    try {
+      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
+      if (autoSignerAddress) {
+        const playerCheck = await lineraAdapter.query<PlayerResponse>(
+          GET_PLAYER,
+          { wallet: autoSignerAddress }
+        );
+        
+        if (!playerCheck?.player) {
+          console.log('📝 Player not registered, auto-registering...');
+          // Use Dynamic Wallet username if available, otherwise generate default
+          const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
+          console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
+          await this.registerPlayer(username);
+          console.log('✅ Player auto-registered!');
+          // Small delay to ensure registration is processed
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } else {
+          console.log(`✅ Player already registered as: ${playerCheck.player.username}`);
+        }
+      }
+    } catch (regErr) {
+      console.warn('⚠️ Could not verify/register player:', regErr);
+      // Continue anyway - let the contract handle it
+    }
     
     // Step 1: Submit to blockchain
     await lineraAdapter.mutate<SubmitScoreResponse>(
@@ -325,7 +366,6 @@ class ArcadeApiClass {
     const xpEarned = calculateXP(gameType, score, bonusData);
     
     // Step 3: Sync to backend (async, don't wait)
-    const wallet = lineraAdapter.getAddress();
     const chainId = lineraAdapter.getChainId();
     
     if (wallet) {
@@ -512,8 +552,9 @@ class ArcadeApiClass {
 
   /**
    * Place a crypto prediction (UP/DOWN)
-   * 1. Submits to blockchain
-   * 2. Syncs to backend
+   * 1. Auto-registers player if not registered
+   * 2. Submits to blockchain
+   * 3. Syncs to backend
    * 
    * @param roundId - Crypto round ID
    * @param direction - 'UP' or 'DOWN'
@@ -523,11 +564,43 @@ class ArcadeApiClass {
   async placeCryptoPrediction(
     roundId: number,
     direction: 'UP' | 'DOWN',
-    coinsStaked: number
+    coinsStaked: number,
+    dynamicUsername?: string
   ): Promise<boolean> {
     console.log(`📊 Placing crypto prediction: ${direction} with ${coinsStaked} coins`);
     
+    const wallet = lineraAdapter.getAddress();
+    if (!wallet) {
+      throw new Error('No wallet connected');
+    }
+    
     try {
+      // Step 0: Check if player is registered, if not auto-register
+      // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
+      try {
+        const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
+        if (autoSignerAddress) {
+          const playerCheck = await lineraAdapter.query<PlayerResponse>(
+            GET_PLAYER,
+            { wallet: autoSignerAddress }
+          );
+          
+          if (!playerCheck?.player) {
+            console.log('📝 Player not registered, auto-registering...');
+            // Use Dynamic Wallet username if available, otherwise generate default
+            const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
+            console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
+            await this.registerPlayer(username);
+            console.log('✅ Player auto-registered!');
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } else {
+            console.log(`✅ Player already registered as: ${playerCheck.player.username}`);
+          }
+        }
+      } catch (regErr) {
+        console.warn('⚠️ Could not verify/register player:', regErr);
+      }
+      
       // Step 1: Submit to blockchain
       // Variable names must match the GraphQL mutation: round_id, direction, amount
       await lineraAdapter.mutate<{ placeCryptoPrediction: boolean }>(
@@ -538,7 +611,6 @@ class ArcadeApiClass {
       console.log('✅ Crypto prediction placed on blockchain');
       
       // Step 2: Sync to backend
-      const wallet = lineraAdapter.getAddress();
       if (wallet) {
         backendApi.placeCryptoPrediction(wallet, roundId, direction, coinsStaked)
           .then(() => console.log('✅ Prediction synced to backend'))
