@@ -77,7 +77,7 @@ export function ProfilePage() {
   const error = localError || arcadeError || connectionError;
   
   // Get Dynamic username
-  const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+  const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
   
   // Debug: log the state
   console.log('📊 ProfilePage state:', {

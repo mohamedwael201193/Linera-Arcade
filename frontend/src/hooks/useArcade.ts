@@ -103,7 +103,7 @@ export function useArcade(): ArcadeState {
       
       // If player not found, check if we have a Dynamic username to auto-register
       if (!playerData) {
-        const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+        const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
         if (dynamicUsername) {
           console.log(`🔄 Player not found, auto-registering with Dynamic username: ${dynamicUsername}`);
           try {
@@ -184,7 +184,7 @@ export function useArcade(): ArcadeState {
     
     try {
       // Get Dynamic username for auto-registration if needed
-      const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+      const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
       console.log(`🎮 Submitting score: ${score} for ${gameType} (Dynamic username: ${dynamicUsername || 'none'})`);
       await arcadeApi.submitScore(gameType as GameType, score, bonusData, dynamicUsername);
       

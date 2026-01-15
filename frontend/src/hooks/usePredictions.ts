@@ -210,7 +210,7 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
     if (!walletAddress) return false;
     try {
       // Get Dynamic username for auto-registration if needed
-      const dynamicUsername = getDynamicUsername(user as Record<string, unknown> | null);
+      const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
       // Use arcadeApi for on-chain signing
       const success = await arcadeApi.placeCryptoPrediction(roundId, direction, coinsStaked, dynamicUsername);
       if (success) {
