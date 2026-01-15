@@ -303,8 +303,21 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
   ): Promise<boolean> => {
     if (!walletAddress) return false;
     try {
-      // Use arcadeApi for on-chain signing
-      const success = await arcadeApi.placeEventPrediction(eventId, outcome, coinsStaked);
+      // Find the backend event data to pass to arcadeApi
+      // This allows arcadeApi to create an on-chain event if needed
+      const backendEvent = worldEvents.find(e => e.id === eventId);
+      
+      const backendEventData = backendEvent ? {
+        title: backendEvent.title,
+        description: backendEvent.description,
+        category: backendEvent.category,
+        end_time: backendEvent.end_time
+      } : undefined;
+      
+      console.log(`🌍 Placing prediction on event ${eventId}, backend data:`, backendEventData);
+      
+      // Use arcadeApi for on-chain signing - now with Dynamic username and backend event data
+      const success = await arcadeApi.placeEventPrediction(eventId, outcome, coinsStaked, getDynamicUsername(user as unknown as Record<string, unknown> | null), backendEventData);
       if (success) {
         await Promise.all([refreshWorldEvents(), refreshUserData()]);
       }
@@ -313,7 +326,7 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
       console.error('Failed to place event prediction:', err);
       return false;
     }
-  }, [walletAddress]);
+  }, [walletAddress, worldEvents, user]);
 
   const resolveWorldEvent = useCallback(async (eventId: number, correctOutcome: string): Promise<WorldEventEntry | null> => {
     try {

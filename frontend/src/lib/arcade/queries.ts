@@ -324,6 +324,17 @@ export const PLACE_CRYPTO_PREDICTION = `
 `;
 
 /**
+ * Create a world event ON-CHAIN
+ * This creates the event in the blockchain state so predictions can be placed
+ * Note: Field names must match the Rust Operation enum: title, description, category, end_time
+ */
+export const CREATE_WORLD_EVENT = `
+  mutation CreateWorldEvent($title: String!, $description: String!, $category: String!, $end_time: Int!) {
+    createWorldEvent(title: $title, description: $description, category: $category, endTime: $end_time)
+  }
+`;
+
+/**
  * Place a world event prediction
  * Note: Field names must match the Rust Operation enum: event_id, prediction (bool), amount
  */

@@ -18,6 +18,7 @@ import {
   CLAIM_DAILY_BONUS,
   CREATE_CRYPTO_ROUND,
   PLACE_CRYPTO_PREDICTION,
+  CREATE_WORLD_EVENT,
   PLACE_EVENT_PREDICTION,
 } from './queries';
 import type {
@@ -851,44 +852,249 @@ class ArcadeApiClass {
     }
   }
 
+  // =============================================================================
+  // WORLD EVENT PREDICTION METHODS
+  // =============================================================================
+
+  /**
+   * Create a world event on the blockchain
+   * Returns the on-chain event ID
+   */
+  async createWorldEvent(
+    title: string,
+    description: string,
+    category: string,
+    endTimeMicros: number
+  ): Promise<number | null> {
+    console.log(`🌍 Creating world event on-chain: ${title}`);
+    
+    try {
+      // Create the event on-chain
+      const result = await lineraAdapter.mutate<{ createWorldEvent: unknown }>(
+        CREATE_WORLD_EVENT,
+        { 
+          title, 
+          description, 
+          category, 
+          end_time: endTimeMicros 
+        }
+      );
+      console.log('📥 createWorldEvent result:', result);
+      
+      // After creation, query for the new event to get its ID
+      // The contract assigns incrementing IDs starting from 0
+      console.log('🔍 Querying for newly created world event...');
+      const activeEvents = await this.getActiveWorldEventsOnChain();
+      console.log('📋 Active events after creation:', activeEvents);
+      
+      // Find the event we just created by matching title
+      const createdEvent = activeEvents.find(e => e.title === title);
+      if (createdEvent) {
+        console.log('✅ Found created event with ID:', createdEvent.id);
+        return createdEvent.id;
+      }
+      
+      // If not found by title, return the highest ID (most recent)
+      if (activeEvents.length > 0) {
+        const maxId = Math.max(...activeEvents.map(e => e.id));
+        console.log('✅ Using highest event ID:', maxId);
+        return maxId;
+      }
+      
+      console.warn('⚠️ Could not determine created event ID');
+      return null;
+    } catch (error) {
+      console.error('Failed to create world event on-chain:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get active world events from blockchain
+   */
+  async getActiveWorldEventsOnChain(): Promise<Array<{
+    id: number;
+    title: string;
+    description: string;
+    category: string;
+    endTime: number;
+    status: string;
+    totalYes: number;
+    totalNo: number;
+  }>> {
+    try {
+      const query = `
+        query GetActiveWorldEvents {
+          activeWorldEvents {
+            id
+            title
+            description
+            category
+            endTime
+            status
+            totalYes
+            totalNo
+          }
+        }
+      `;
+      const result = await lineraAdapter.query<{
+        activeWorldEvents: Array<{
+          id: number;
+          title: string;
+          description: string;
+          category: string;
+          endTime: number;
+          status: string;
+          totalYes: number;
+          totalNo: number;
+        }>;
+      }>(query);
+      return result.activeWorldEvents || [];
+    } catch (error) {
+      console.error('Failed to get active world events from chain:', error);
+      return [];
+    }
+  }
+
   /**
    * Place a world event prediction
-   * 1. Submits to blockchain
-   * 2. Syncs to backend
+   * 1. Ensures event exists on-chain (creates if needed)
+   * 2. Submits prediction to blockchain
+   * 3. Syncs to backend
    * 
-   * @param eventId - World event ID
+   * @param eventId - Backend event ID
    * @param outcome - Predicted outcome ('YES' or 'NO')
    * @param coinsStaked - Amount of coins to stake
+   * @param backendEventData - Optional backend event data for creating on-chain event
    * @returns true if prediction was placed
    */
   async placeEventPrediction(
     eventId: number,
     outcome: string,
-    coinsStaked: number
+    coinsStaked: number,
+    dynamicUsername?: string,
+    backendEventData?: {
+      title: string;
+      description: string;
+      category: string;
+      end_time: string; // ISO date string
+    }
   ): Promise<boolean> {
-    console.log(`🌍 Placing event prediction: ${outcome} with ${coinsStaked} coins`);
+    console.log(`🌍 Placing event prediction on event ${eventId}, backend data:`, backendEventData);
+    console.log(`📊 Placing event prediction: ${outcome} with ${coinsStaked} coins`);
     
     try {
+      // Ensure player is registered
+      const wallet = lineraAdapter.getAddress();
+      if (!wallet) {
+        throw new Error('Wallet not connected');
+      }
+
+      // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
+      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
+      const queryAddress = autoSignerAddress || wallet;
+
+      // Check if player exists, register if not
+      const playerResult = await lineraAdapter.query<PlayerResponse>(
+        GET_PLAYER,
+        { wallet: queryAddress }
+      );
+
+      if (!playerResult.player) {
+        // Auto-register with Dynamic username or fallback to sanitized wallet
+        const username = dynamicUsername || `Player_${queryAddress.slice(0, 8)}`;
+        console.log(`🔐 Auto-registering player as: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
+        await lineraAdapter.mutate<RegisterPlayerResponse>(
+          REGISTER_PLAYER,
+          { username }
+        );
+        console.log('✅ Player auto-registered!');
+        // Small delay to ensure registration is processed
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } else {
+        console.log('✅ Player already registered as:', playerResult.player.username);
+      }
+
+      // Step 1: Get active world events on chain to check if this event exists
+      const activeEvents = await this.getActiveWorldEventsOnChain();
+      console.log('📋 Active on-chain world events:', activeEvents.length, activeEvents);
+
+      // Check if there's an event on-chain we can use
+      // For world events, we need to match by title since backend IDs don't match on-chain IDs
+      let onChainEventId: number | null = null;
+
+      // Helper function to check if event is still accepting bets
+      const isEventAcceptingBets = (event: { endTime: number; status: string }) => {
+        const currentTimeMicros = Date.now() * 1000;
+        return event.status === 'ACTIVE' && currentTimeMicros < event.endTime;
+      };
+
+      // Try to find matching event on-chain by title (if we have backend data)
+      if (backendEventData) {
+        const matchingEvent = activeEvents.find(e => 
+          e.title === backendEventData.title && isEventAcceptingBets(e)
+        );
+        if (matchingEvent) {
+          console.log('✅ Found matching on-chain event by title:', matchingEvent.id);
+          onChainEventId = matchingEvent.id;
+        }
+      }
+
+      // If no matching event found and we have backend data, create one on-chain
+      if (onChainEventId === null && backendEventData) {
+        console.log('📝 Creating fresh on-chain world event...');
+        
+        // Convert end_time from ISO string to microseconds
+        const endTimeMicros = new Date(backendEventData.end_time).getTime() * 1000;
+        
+        const createdId = await this.createWorldEvent(
+          backendEventData.title,
+          backendEventData.description,
+          backendEventData.category,
+          endTimeMicros
+        );
+        
+        if (createdId !== null) {
+          console.log('✅ Created on-chain world event with ID:', createdId);
+          onChainEventId = createdId;
+        } else {
+          throw new Error('Failed to create world event on-chain');
+        }
+      }
+
+      // If still no on-chain event, we can't proceed
+      if (onChainEventId === null) {
+        console.error('❌ No on-chain world event available and no backend data to create one');
+        throw new Error('World event not found on-chain. Please provide event details.');
+      }
+
+      console.log('🎯 Using on-chain event ID:', onChainEventId, 'for prediction');
+
       // Convert outcome string to boolean (YES = true, NO = false)
       const predictionBool = outcome.toUpperCase() === 'YES';
-      
-      // Step 1: Submit to blockchain
-      // Variable names must match the GraphQL mutation: event_id, prediction (bool), amount
-      await lineraAdapter.mutate<{ placeEventPrediction: boolean }>(
+
+      // Step 2: Submit prediction to blockchain using on-chain event ID
+      const mutationResult = await lineraAdapter.mutate<{ placeEventPrediction: unknown }>(
         PLACE_EVENT_PREDICTION,
-        { event_id: eventId, prediction: predictionBool, amount: coinsStaked }
+        { event_id: onChainEventId, prediction: predictionBool, amount: coinsStaked }
       );
       
-      console.log('✅ Event prediction placed on blockchain');
+      console.log('📥 placeEventPrediction result:', mutationResult);
       
-      // Step 2: Sync to backend
-      const wallet = lineraAdapter.getAddress();
-      if (wallet) {
-        backendApi.placeEventPrediction(wallet, eventId, outcome, coinsStaked)
-          .then(() => console.log('✅ Prediction synced to backend'))
-          .catch(err => console.warn('⚠️ Failed to sync prediction to backend:', err));
+      // Check mutation result
+      const resultData = mutationResult?.placeEventPrediction;
+      if (resultData === null || resultData === undefined) {
+        console.warn('⚠️ Event prediction may have failed - null/undefined result');
+      } else if (Array.isArray(resultData)) {
+        // Empty array [] means success in Linera GraphQL
+        console.log('✅ Event prediction placed on blockchain (mutation accepted)');
       }
-      
+
+      // Step 3: Sync to backend (fire and forget)
+      backendApi.placeEventPrediction(wallet, eventId, outcome, coinsStaked)
+        .then(() => console.log('✅ Prediction synced to backend'))
+        .catch(err => console.warn('⚠️ Failed to sync prediction to backend:', err));
+
       return true;
     } catch (error) {
       console.error('Failed to place event prediction:', error);
