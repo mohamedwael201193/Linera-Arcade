@@ -1,10 +1,14 @@
 /**
  * Crypto Price Service
  * 
- * Fetches real-time BTC and ETH prices from multiple APIs with fallback.
- * Primary: CryptoCompare (reliable, no rate limits, no geo restrictions)
- * Fallback: Binance US API
+ * Real-time BTC and ETH prices via Binance WebSocket
+ * ✅ True real-time (tick-by-tick)
+ * ✅ 100% free
+ * ✅ No API key required
+ * ✅ Works 24/7
  */
+
+import WebSocket from 'ws';
 
 export interface PriceData {
   symbol: string;
@@ -17,99 +21,131 @@ export interface CryptoPrice {
   eth: PriceData;
 }
 
-// API URLs - using APIs that work globally
-const CRYPTOCOMPARE_API_URL = 'https://min-api.cryptocompare.com/data';
-const BINANCE_US_API_URL = 'https://api.binance.us/api/v3';
+// Binance WebSocket endpoint
+const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws/btcusdt@trade/ethusdt@trade';
 
-// Cache to avoid rate limiting
-let priceCache: { btc: number; eth: number; timestamp: number } | null = null;
-const CACHE_TTL = 5000; // 5 seconds
+// Fallback REST API (for initial prices before WebSocket connects)
+const BINANCE_REST_URL = 'https://api.binance.com/api/v3';
 
-/**
- * Fetch prices from CryptoCompare (most reliable, no geo restrictions)
- */
-async function fetchFromCryptoCompare(): Promise<{ btc: number; eth: number }> {
-  const response = await fetch(
-    `${CRYPTOCOMPARE_API_URL}/pricemulti?fsyms=BTC,ETH&tsyms=USD`
-  );
-  if (!response.ok) {
-    throw new Error(`CryptoCompare API error: ${response.status}`);
-  }
-  const data = await response.json() as { BTC?: { USD: number }; ETH?: { USD: number } };
-  
-  if (!data.BTC?.USD || !data.ETH?.USD) {
-    throw new Error('Invalid CryptoCompare response');
-  }
-  
-  return {
-    btc: Math.round(data.BTC.USD * 100),
-    eth: Math.round(data.ETH.USD * 100),
-  };
-}
+// Real-time price cache (updated by WebSocket)
+let liveCache: { btc: number; eth: number; lastUpdate: number } = {
+  btc: 0,
+  eth: 0,
+  lastUpdate: 0,
+};
+
+// WebSocket connection
+let ws: WebSocket | null = null;
+let reconnectTimeout: NodeJS.Timeout | null = null;
+let isConnecting = false;
 
 /**
- * Fetch prices from Binance US (fallback)
+ * Connect to Binance WebSocket for real-time prices
  */
-async function fetchFromBinanceUS(): Promise<{ btc: number; eth: number }> {
-  const [btcRes, ethRes] = await Promise.all([
-    fetch(`${BINANCE_US_API_URL}/ticker/price?symbol=BTCUSD`),
-    fetch(`${BINANCE_US_API_URL}/ticker/price?symbol=ETHUSD`),
-  ]);
-  
-  if (!btcRes.ok || !ethRes.ok) {
-    throw new Error(`Binance US API error`);
+function connectWebSocket(): void {
+  if (isConnecting || (ws && ws.readyState === WebSocket.OPEN)) {
+    return;
   }
-  
-  const btcData = await btcRes.json() as { price: string };
-  const ethData = await ethRes.json() as { price: string };
-  
-  return {
-    btc: Math.round(parseFloat(btcData.price) * 100),
-    eth: Math.round(parseFloat(ethData.price) * 100),
-  };
-}
 
-/**
- * Fetch all prices with caching and fallback
- */
-async function fetchAllPrices(): Promise<{ btc: number; eth: number }> {
-  // Check cache first
-  if (priceCache && Date.now() - priceCache.timestamp < CACHE_TTL) {
-    return { btc: priceCache.btc, eth: priceCache.eth };
-  }
-  
-  // Try CryptoCompare first (most reliable)
-  try {
-    const prices = await fetchFromCryptoCompare();
-    priceCache = { ...prices, timestamp: Date.now() };
-    return prices;
-  } catch (ccError) {
-    console.warn('CryptoCompare failed, trying Binance US:', ccError);
-  }
-  
-  // Fallback to Binance US
-  try {
-    const prices = await fetchFromBinanceUS();
-    priceCache = { ...prices, timestamp: Date.now() };
-    return prices;
-  } catch (binanceError) {
-    console.error('Binance US also failed:', binanceError);
+  isConnecting = true;
+  console.log('🔌 Connecting to Binance WebSocket...');
+
+  ws = new WebSocket(BINANCE_WS_URL);
+
+  ws.on('open', () => {
+    isConnecting = false;
+    console.log('✅ Binance WebSocket connected - Real-time prices active');
+  });
+
+  ws.on('message', (data: WebSocket.Data) => {
+    try {
+      const trade = JSON.parse(data.toString()) as { s: string; p: string };
+      const price = Math.round(parseFloat(trade.p) * 100); // Convert to cents
+      
+      if (trade.s === 'BTCUSDT') {
+        liveCache.btc = price;
+      } else if (trade.s === 'ETHUSDT') {
+        liveCache.eth = price;
+      }
+      liveCache.lastUpdate = Date.now();
+    } catch (err) {
+      // Ignore parse errors (heartbeats, etc.)
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('❌ Binance WebSocket error:', error.message);
+  });
+
+  ws.on('close', () => {
+    isConnecting = false;
+    console.log('🔌 Binance WebSocket disconnected, reconnecting in 3s...');
     
-    // Return cached price if available (even if stale)
-    if (priceCache) {
-      console.warn('Using stale cached prices');
-      return { btc: priceCache.btc, eth: priceCache.eth };
+    // Clear any existing reconnect timeout
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
     }
     
-    throw new Error('All price APIs failed and no cache available');
+    // Reconnect after 3 seconds
+    reconnectTimeout = setTimeout(() => {
+      connectWebSocket();
+    }, 3000);
+  });
+}
+
+/**
+ * Fetch initial prices from Binance REST API (one-time, before WebSocket)
+ */
+async function fetchInitialPrices(): Promise<{ btc: number; eth: number }> {
+  try {
+    const [btcRes, ethRes] = await Promise.all([
+      fetch(`${BINANCE_REST_URL}/ticker/price?symbol=BTCUSDT`),
+      fetch(`${BINANCE_REST_URL}/ticker/price?symbol=ETHUSDT`),
+    ]);
+
+    if (!btcRes.ok || !ethRes.ok) {
+      throw new Error('Binance REST API error');
+    }
+
+    const btcData = await btcRes.json() as { price: string };
+    const ethData = await ethRes.json() as { price: string };
+
+    return {
+      btc: Math.round(parseFloat(btcData.price) * 100),
+      eth: Math.round(parseFloat(ethData.price) * 100),
+    };
+  } catch (error) {
+    console.error('Failed to fetch initial prices:', error);
+    // Return zeros if initial fetch fails - WebSocket will update soon
+    return { btc: 0, eth: 0 };
   }
+}
+
+/**
+ * Initialize the price service
+ */
+async function initialize(): Promise<void> {
+  // Fetch initial prices via REST API
+  const initialPrices = await fetchInitialPrices();
+  liveCache = { ...initialPrices, lastUpdate: Date.now() };
+  console.log(`📊 Initial prices: BTC=$${(initialPrices.btc / 100).toFixed(2)}, ETH=$${(initialPrices.eth / 100).toFixed(2)}`);
+  
+  // Start WebSocket connection for real-time updates
+  connectWebSocket();
+}
+
+/**
+ * Get current prices from live cache
+ */
+function getLivePrices(): { btc: number; eth: number } {
+  return { btc: liveCache.btc, eth: liveCache.eth };
 }
 
 /**
  * Get current BTC price in USD cents
  */
 export async function getBTCPrice(): Promise<PriceData> {
-  const prices = await fetchAllPrices();
+  const prices = getLivePrices();
   return {
     symbol: 'BTC',
     price: prices.btc,
@@ -121,7 +157,7 @@ export async function getBTCPrice(): Promise<PriceData> {
  * Get current ETH price in USD cents
  */
 export async function getETHPrice(): Promise<PriceData> {
-  const prices = await fetchAllPrices();
+  const prices = getLivePrices();
   return {
     symbol: 'ETH',
     price: prices.eth,
@@ -133,7 +169,7 @@ export async function getETHPrice(): Promise<PriceData> {
  * Get both BTC and ETH prices
  */
 export async function getAllPrices(): Promise<CryptoPrice> {
-  const prices = await fetchAllPrices();
+  const prices = getLivePrices();
   return {
     btc: { symbol: 'BTC', price: prices.btc, timestamp: new Date() },
     eth: { symbol: 'ETH', price: prices.eth, timestamp: new Date() },
@@ -148,6 +184,20 @@ export function formatPrice(priceInCents: number): string {
 }
 
 /**
+ * Check if WebSocket is connected
+ */
+export function isConnected(): boolean {
+  return ws !== null && ws.readyState === WebSocket.OPEN;
+}
+
+/**
+ * Get time since last price update (ms)
+ */
+export function getLastUpdateAge(): number {
+  return Date.now() - liveCache.lastUpdate;
+}
+
+/**
  * Crypto Price Service singleton
  */
 export const binanceService = {
@@ -155,6 +205,9 @@ export const binanceService = {
   getETHPrice,
   getAllPrices,
   formatPrice,
+  isConnected,
+  getLastUpdateAge,
+  initialize,
   
   /**
    * Get price for a specific asset
@@ -163,5 +216,8 @@ export const binanceService = {
     return asset === 'BTC' ? getBTCPrice() : getETHPrice();
   },
 };
+
+// Auto-initialize when module loads
+initialize().catch(console.error);
 
 export default binanceService;
