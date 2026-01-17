@@ -1,13 +1,15 @@
 /**
  * Crypto Price Service
  * 
- * Near real-time BTC and ETH prices via Coinbase REST API (polling)
- * ✅ Very reliable API
+ * Real-time BTC and ETH prices via Coinbase WebSocket
+ * ✅ True real-time prices (sub-second updates)
  * ✅ 100% free (no API key required)
- * ✅ Works globally (no geo restrictions)
- * ✅ Very generous rate limits for low-frequency polling
+ * ✅ Works globally (no geo restrictions like Binance)
+ * ✅ Professional-grade exchange feed
  * ✅ Works 24/7
  */
+
+import WebSocket from 'ws';
 
 export interface PriceData {
   symbol: string;
@@ -20,25 +22,143 @@ export interface CryptoPrice {
   eth: PriceData;
 }
 
-// Coinbase API (free, reliable, global, no rate limits)
+// Coinbase WebSocket (works globally, no geo restrictions)
+const COINBASE_WS_URL = 'wss://ws-feed.exchange.coinbase.com';
+
+// Coinbase REST API for initial prices (fallback)
 const COINBASE_BTC_API = 'https://api.coinbase.com/v2/prices/BTC-USD/spot';
 const COINBASE_ETH_API = 'https://api.coinbase.com/v2/prices/ETH-USD/spot';
 
-// Price cache (updated by polling)
+// Price cache (updated by WebSocket)
 let priceCache: { btc: number; eth: number; lastUpdate: number } = {
   btc: 0,
   eth: 0,
   lastUpdate: 0,
 };
 
-// Polling interval (3 seconds for near real-time)
-const POLL_INTERVAL = 3000;
-let pollTimer: NodeJS.Timeout | null = null;
+// WebSocket state
+let ws: WebSocket | null = null;
+let reconnectTimeout: NodeJS.Timeout | null = null;
+let isConnecting = false;
+let heartbeatInterval: NodeJS.Timeout | null = null;
 
 /**
- * Fetch prices from Coinbase
+ * Connect to Coinbase WebSocket for real-time prices
  */
-async function fetchPrices(): Promise<{ btc: number; eth: number }> {
+function connectWebSocket(): void {
+  if (isConnecting || (ws && ws.readyState === WebSocket.OPEN)) {
+    return;
+  }
+
+  isConnecting = true;
+  console.log('🔌 Connecting to Coinbase WebSocket...');
+
+  ws = new WebSocket(COINBASE_WS_URL);
+
+  ws.on('open', () => {
+    isConnecting = false;
+    console.log('✅ Coinbase WebSocket connected');
+
+    // Subscribe to BTC-USD and ETH-USD ticker channel
+    const subscribeMsg = {
+      type: 'subscribe',
+      product_ids: ['BTC-USD', 'ETH-USD'],
+      channels: ['ticker'],
+    };
+    ws?.send(JSON.stringify(subscribeMsg));
+    console.log('📡 Subscribed to BTC-USD & ETH-USD ticker');
+
+    // Start heartbeat to keep connection alive
+    startHeartbeat();
+  });
+
+  ws.on('message', (data: WebSocket.Data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      
+      if (msg.type === 'ticker' && msg.price) {
+        const price = Math.round(parseFloat(msg.price) * 100);
+        const prevPrice = msg.product_id === 'BTC-USD' ? priceCache.btc : priceCache.eth;
+        
+        if (msg.product_id === 'BTC-USD') {
+          priceCache.btc = price;
+        } else if (msg.product_id === 'ETH-USD') {
+          priceCache.eth = price;
+        }
+        priceCache.lastUpdate = Date.now();
+
+        // Log significant price changes (> $1)
+        if (Math.abs(price - prevPrice) > 100) {
+          const symbol = msg.product_id === 'BTC-USD' ? 'BTC' : 'ETH';
+          const formatted = (price / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+          console.log('💰 ' + symbol + ': $' + formatted);
+        }
+      } else if (msg.type === 'subscriptions') {
+        const channels = msg.channels?.map((c: { name: string }) => c.name).join(', ') || '';
+        console.log('✅ Subscription confirmed: ' + channels);
+      } else if (msg.type === 'error') {
+        console.error('❌ Coinbase WS error:', msg.message);
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('❌ Coinbase WebSocket error:', error.message);
+  });
+
+  ws.on('close', (code, reason) => {
+    isConnecting = false;
+    stopHeartbeat();
+    console.log('🔌 Coinbase WebSocket closed (' + code + '): ' + (reason || 'No reason'));
+    
+    // Clear any existing reconnect timeout
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+    }
+    
+    // Reconnect after 3 seconds
+    reconnectTimeout = setTimeout(() => {
+      console.log('🔄 Reconnecting to Coinbase WebSocket...');
+      connectWebSocket();
+    }, 3000);
+  });
+}
+
+/**
+ * Start heartbeat to keep WebSocket alive
+ */
+function startHeartbeat(): void {
+  stopHeartbeat();
+  
+  // Check connection health every 30s
+  heartbeatInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Check if we've received updates recently
+      const age = Date.now() - priceCache.lastUpdate;
+      if (age > 60000) {
+        console.warn('⚠️ No price updates for 60s, reconnecting...');
+        ws.close();
+      }
+    }
+  }, 30000);
+}
+
+/**
+ * Stop heartbeat
+ */
+function stopHeartbeat(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
+/**
+ * Fetch initial prices from Coinbase REST API
+ */
+async function fetchInitialPrices(): Promise<{ btc: number; eth: number }> {
   try {
     const [btcRes, ethRes] = await Promise.all([
       fetch(COINBASE_BTC_API),
@@ -46,8 +166,7 @@ async function fetchPrices(): Promise<{ btc: number; eth: number }> {
     ]);
 
     if (!btcRes.ok || !ethRes.ok) {
-      console.warn(`⚠️ Coinbase API error: BTC=${btcRes.status}, ETH=${ethRes.status}`);
-      return { btc: priceCache.btc, eth: priceCache.eth };
+      throw new Error('Coinbase API error: BTC=' + btcRes.status + ', ETH=' + ethRes.status);
     }
 
     const btcData = await btcRes.json() as { data?: { amount: string } };
@@ -60,68 +179,30 @@ async function fetchPrices(): Promise<{ btc: number; eth: number }> {
       };
     }
 
-    console.warn('⚠️ Coinbase returned invalid data');
-    return { btc: priceCache.btc, eth: priceCache.eth };
+    throw new Error('Invalid response format');
   } catch (error) {
-    console.warn('⚠️ Coinbase fetch failed:', (error as Error).message);
-    return { btc: priceCache.btc, eth: priceCache.eth };
+    console.warn('⚠️ Failed to fetch initial prices:', (error as Error).message);
+    return { btc: 0, eth: 0 };
   }
-}
-
-/**
- * Update price cache
- */
-async function updatePrices(): Promise<void> {
-  const prices = await fetchPrices();
-  
-  if (prices.btc > 0 || prices.eth > 0) {
-    const btcChanged = prices.btc !== priceCache.btc;
-    const ethChanged = prices.eth !== priceCache.eth;
-    
-    priceCache = { ...prices, lastUpdate: Date.now() };
-    
-    // Only log when prices actually change
-    if (btcChanged || ethChanged) {
-      const btcStr = (prices.btc / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-      const ethStr = (prices.eth / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-      console.log(`💰 Prices: BTC=$${btcStr}, ETH=$${ethStr}`);
-    }
-  }
-}
-
-/**
- * Start price polling
- */
-function startPolling(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-  }
-  
-  console.log(`🔄 Starting Coinbase price polling every ${POLL_INTERVAL / 1000}s...`);
-  
-  // Poll every POLL_INTERVAL
-  pollTimer = setInterval(updatePrices, POLL_INTERVAL);
 }
 
 /**
  * Initialize the price service
  */
 async function initialize(): Promise<void> {
-  console.log('📊 Initializing Coinbase price service...');
+  console.log('📊 Initializing Coinbase real-time price service...');
   
-  // Fetch initial prices
-  await updatePrices();
-  
-  if (priceCache.btc > 0 && priceCache.eth > 0) {
-    const btc = (priceCache.btc / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    const eth = (priceCache.eth / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    console.log(`✅ Initial prices: BTC=$${btc}, ETH=$${eth}`);
-  } else {
-    console.warn('⚠️ Initial prices unavailable, will retry...');
+  // Fetch initial prices via REST API (fast startup)
+  const initialPrices = await fetchInitialPrices();
+  if (initialPrices.btc > 0 && initialPrices.eth > 0) {
+    priceCache = { ...initialPrices, lastUpdate: Date.now() };
+    const btc = (initialPrices.btc / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    const eth = (initialPrices.eth / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    console.log('✅ Initial prices: BTC=$' + btc + ', ETH=$' + eth);
   }
   
-  // Start polling for updates
-  startPolling();
+  // Connect WebSocket for real-time updates
+  connectWebSocket();
 }
 
 /**
@@ -189,7 +270,7 @@ export function getLastUpdateAge(): number {
 }
 
 /**
- * Crypto Price Service singleton (Coinbase-powered)
+ * Crypto Price Service singleton (Coinbase WebSocket-powered)
  */
 export const coinbaseService = {
   getBTCPrice,
