@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! State management for the Arcade Hub application.
-//! Extended with Token Economy and Prediction Markets.
+//! Extended with Token Economy, Prediction Markets, and Event-Sourced Model.
 
-use arcade_hub::{CryptoRound, GameScore, LeaderboardEntry, Player, Prediction, WorldEvent};
+use arcade_hub::{ArcadeEvent, CryptoRound, GamePlayedEvent, GameScore, LeaderboardEntry, Player, Prediction, WorldEvent};
 use linera_sdk::{
     linera_base_types::{AccountOwner, ChainId},
-    views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext},
+    views::{linera_views, LogView, MapView, RegisterView, RootView, ViewStorageContext},
 };
 
 /// The application state stored on each chain.
@@ -47,4 +47,19 @@ pub struct ArcadeHubState {
     pub total_coins_wagered: RegisterView<u64>,
     /// Total predictions made.
     pub total_predictions: RegisterView<u64>,
+
+    // ========== XP NORMALIZATION (NEW) ==========
+    /// Normalization factor for XP display (raw_xp / factor = displayed_xp).
+    /// Default: 10 (to fix the 100k XP issue without data migration).
+    /// Can be adjusted later (20, 50, etc.) without resetting leaderboards.
+    pub normalization_factor: RegisterView<u64>,
+
+    // ========== EVENT-SOURCED MODEL (NEW) ==========
+    /// Event log for activity feed and cross-chain syncing.
+    /// Events are append-only and power real-time updates via polling.
+    pub event_log: LogView<ArcadeEvent>,
+    /// Counter for generating unique event IDs.
+    pub arcade_event_counter: RegisterView<u64>,
+    /// Recent game played events for activity feed (more detailed).
+    pub recent_games: LogView<GamePlayedEvent>,
 }

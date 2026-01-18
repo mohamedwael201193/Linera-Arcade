@@ -4,7 +4,7 @@
 //! ABI and shared types for the Arcade Hub application.
 //! Extended with Token Economy and Prediction Markets.
 
-use async_graphql::{InputObject, Request, Response, SimpleObject};
+use async_graphql::{InputObject, Request, Response, SimpleObject, Union};
 use linera_sdk::{
     graphql::GraphQLMutationRoot,
     linera_base_types::{AccountOwner, ChainId, ContractAbi, ServiceAbi},
@@ -28,6 +28,7 @@ impl ServiceAbi for ArcadeHubAbi {
 pub type GameId = u16;
 
 /// The supported game types in the arcade.
+/// ALL 8 games are now natively supported in the contract.
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, async_graphql::Enum,
 )]
@@ -37,48 +38,50 @@ pub enum GameType {
     ReactionStrike,
     MathBlitz,
     SnakeSprint,
+    // NEW: Added missing game types
+    AimTrainer,
+    ColorRush,
+    TypingBlitz,
 }
 
+/// XP calculation constants - CAPPED to prevent XP explosion
+/// Each game awards 30-75 XP max per play
+const XP_HARD_CAP: u64 = 75;
+const XP_MIN: u64 = 30;
+
 impl GameType {
-    /// Calculate XP earned based on game type, score, and optional bonus data.
+    /// Calculate XP earned based on game type and score.
+    /// 
+    /// XP ECONOMY RULES (Non-Negotiable):
+    /// 1. XP per game is CAPPED (max 75 XP)
+    /// 2. XP is calculated ONCE in contract only
+    /// 3. Frontend NEVER calculates or guesses XP
+    /// 
+    /// Formula: base_xp + bonus (capped at 10) with hard cap of 75
     pub fn calculate_xp(&self, score: u64, bonus_data: Option<u64>) -> u64 {
-        match self {
-            GameType::SpeedClicker => {
-                // score = number of clicks in 10s
-                score.saturating_mul(10)
-            }
-            GameType::MemoryMatrix => {
-                // score = levelReached, bonus_data = perfectRounds
-                let level = score;
-                let perfect_rounds = bonus_data.unwrap_or(0);
-                level
-                    .saturating_mul(100)
-                    .saturating_add(perfect_rounds.saturating_mul(50))
-            }
-            GameType::ReactionStrike => {
-                // score = avgReactionMs, bonus_data = targetsHit
-                let avg_ms = score as i64;
-                let targets_hit = bonus_data.unwrap_or(0);
-                let base = 1000_i64.saturating_sub(avg_ms).max(0);
-                (base as u64).saturating_mul(targets_hit)
-            }
-            GameType::MathBlitz => {
-                // score = correctAnswers, bonus_data = maxStreak
-                let correct = score;
-                let streak = bonus_data.unwrap_or(0);
-                correct
-                    .saturating_mul(25)
-                    .saturating_add(streak.saturating_mul(10))
-            }
-            GameType::SnakeSprint => {
-                // score = snakeLength, bonus_data = applesEaten
-                let length = score;
-                let apples = bonus_data.unwrap_or(0);
-                length
-                    .saturating_mul(15)
-                    .saturating_add(apples.saturating_mul(5))
-            }
-        }
+        // Base XP per game type
+        let base = match self {
+            GameType::SpeedClicker => 40,   // Click speed game
+            GameType::MemoryMatrix => 45,   // Memory pattern game
+            GameType::ReactionStrike => 50, // Reaction time game
+            GameType::MathBlitz => 55,      // Math solving game
+            GameType::SnakeSprint => 35,    // Classic snake game
+            GameType::AimTrainer => 45,     // Aim precision game
+            GameType::ColorRush => 35,      // Color matching game
+            GameType::TypingBlitz => 60,    // Typing speed game
+        };
+        
+        // Bonus XP based on performance (max +10 XP)
+        // Score is capped at 100 for bonus calculation
+        let capped_score = score.min(100);
+        let bonus = capped_score / 10; // 0-10 bonus XP
+        
+        // Additional bonus from bonus_data (e.g., streaks, perfect rounds)
+        let extra = bonus_data.unwrap_or(0).min(50) / 10; // 0-5 extra XP
+        
+        // Total with hard cap
+        let total = base + bonus + extra;
+        total.clamp(XP_MIN, XP_HARD_CAP)
     }
 
     /// Get the game ID for this game type.
@@ -89,6 +92,9 @@ impl GameType {
             GameType::ReactionStrike => 3,
             GameType::MathBlitz => 4,
             GameType::SnakeSprint => 5,
+            GameType::AimTrainer => 6,
+            GameType::ColorRush => 7,
+            GameType::TypingBlitz => 8,
         }
     }
 
@@ -100,15 +106,73 @@ impl GameType {
             GameType::ReactionStrike => "Reaction Strike",
             GameType::MathBlitz => "Math Blitz",
             GameType::SnakeSprint => "Snake Sprint",
+            GameType::AimTrainer => "Aim Trainer",
+            GameType::ColorRush => "Color Rush",
+            GameType::TypingBlitz => "Typing Blitz",
         }
     }
 }
 
 /// Calculate level from total XP.
+/// Uses normalized XP for level calculation.
 pub fn calculate_level(total_xp: u64) -> u32 {
     // Level formula: level = sqrt(xp / 100) + 1
     // Each level requires progressively more XP
     ((total_xp as f64 / 100.0).sqrt() as u32).saturating_add(1)
+}
+
+/// Calculate level from raw XP with normalization.
+/// normalization_factor divides raw XP to control displayed values.
+pub fn calculate_level_normalized(raw_xp: u64, normalization_factor: u64) -> u32 {
+    let normalized_xp = raw_xp / normalization_factor.max(1);
+    calculate_level(normalized_xp)
+}
+
+// =============================================================================
+// ARCADE EVENTS - Event-Sourced Model for Cross-Chain Messaging
+// =============================================================================
+
+/// Events emitted by the Arcade Hub contract.
+/// These are stored on-chain and power activity feeds, leaderboards, and auditing.
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject)]
+pub struct ArcadeEvent {
+    /// Unique event ID
+    pub id: u64,
+    /// Timestamp when the event occurred (microseconds)
+    pub timestamp: u64,
+    /// The type of event
+    pub event_type: ArcadeEventType,
+}
+
+/// Types of events in the Arcade Hub
+#[derive(Clone, Debug, Serialize, Deserialize, async_graphql::Enum, PartialEq, Eq, Copy)]
+pub enum ArcadeEventType {
+    /// A game was played and score submitted
+    GamePlayed,
+    /// Player registered
+    PlayerRegistered,
+    /// XP was synced from another chain
+    XpSynced,
+    /// Prediction was placed
+    PredictionPlaced,
+    /// Prediction was resolved
+    PredictionResolved,
+    /// Daily bonus claimed
+    DailyBonusClaimed,
+    /// Multiplayer result submitted
+    MultiplayerResult,
+}
+
+/// Detailed event data for GamePlayed events
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "GamePlayedEventInput")]
+pub struct GamePlayedEvent {
+    pub player: AccountOwner,
+    pub username: String,
+    pub game_type: GameType,
+    pub score: u64,
+    pub xp_earned: u64,
+    pub timestamp: u64,
 }
 
 /// A registered player in the arcade.
@@ -618,44 +682,136 @@ pub enum Operation {
     },
 }
 
+// =============================================================================
+// GRAPHQL RESPONSE TYPES - Each response is a separate struct for GraphQL compatibility
+// =============================================================================
+
+/// Response for player registration.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct PlayerRegisteredResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Response for score submission - CRITICAL: Contains XP earned from contract.
+/// Frontend MUST use this value, NEVER calculate XP locally.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct ScoreSubmittedResponse {
+    pub success: bool,
+    pub xp_earned: u64,
+    pub coins_earned: u64,
+    pub total_xp: u64,
+    pub level: u32,
+}
+
+/// Response for username update.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct UsernameUpdatedResponse {
+    pub success: bool,
+}
+
+/// Response for errors.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct ErrorResponse {
+    pub success: bool,
+    pub error: String,
+}
+
+/// Response for daily bonus claim.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct DailyBonusResponse {
+    pub success: bool,
+    pub coins: u64,
+}
+
+/// Response for crypto round creation.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct CryptoRoundCreatedResponse {
+    pub success: bool,
+    pub round_id: u64,
+}
+
+/// Response for crypto prediction placement.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct CryptoPredictionResponse {
+    pub success: bool,
+    pub prediction_id: u64,
+    pub odds: u64,
+}
+
+/// Response for crypto round resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct CryptoRoundResolvedResponse {
+    pub success: bool,
+    pub winning_direction: PredictionDirection,
+}
+
+/// Response for world event creation.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct WorldEventCreatedResponse {
+    pub success: bool,
+    pub event_id: u64,
+}
+
+/// Response for event prediction placement.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct EventPredictionResponse {
+    pub success: bool,
+    pub prediction_id: u64,
+    pub odds: u64,
+}
+
+/// Response for world event resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct WorldEventResolvedResponse {
+    pub success: bool,
+    pub outcome: bool,
+}
+
+/// Response for multiplayer result submission.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct MultiplayerResultResponse {
+    pub success: bool,
+    pub xp_earned: u64,
+    pub coins_earned: u64,
+    pub is_winner: bool,
+}
+
 /// Response from contract operations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Uses Union to expose all variants as GraphQL types.
+#[derive(Debug, Clone, Serialize, Deserialize, Union)]
 pub enum ArcadeResponse {
     // ========== EXISTING RESPONSES ==========
     /// Player was registered successfully.
-    PlayerRegistered,
+    PlayerRegistered(PlayerRegisteredResponse),
     /// Score was submitted successfully with XP earned.
-    ScoreSubmitted { xp_earned: u64, coins_earned: u64 },
+    ScoreSubmitted(ScoreSubmittedResponse),
     /// Username was updated successfully.
-    UsernameUpdated,
+    UsernameUpdated(UsernameUpdatedResponse),
     /// Operation failed with an error.
-    Error(String),
+    Error(ErrorResponse),
 
     // ========== TOKEN ECONOMY RESPONSES ==========
     /// Daily bonus claimed successfully.
-    DailyBonusClaimed { coins: u64 },
+    DailyBonusClaimed(DailyBonusResponse),
 
     // ========== PREDICTION RESPONSES ==========
     /// Crypto round created successfully.
-    CryptoRoundCreated { round_id: u64 },
+    CryptoRoundCreated(CryptoRoundCreatedResponse),
     /// Crypto prediction placed successfully.
-    CryptoPredictionPlaced { prediction_id: u64, odds: u64 },
+    CryptoPredictionPlaced(CryptoPredictionResponse),
     /// Crypto round resolved.
-    CryptoRoundResolved { winning_direction: PredictionDirection },
+    CryptoRoundResolved(CryptoRoundResolvedResponse),
     /// World event created successfully.
-    WorldEventCreated { event_id: u64 },
+    WorldEventCreated(WorldEventCreatedResponse),
     /// Event prediction placed successfully.
-    EventPredictionPlaced { prediction_id: u64, odds: u64 },
+    EventPredictionPlaced(EventPredictionResponse),
     /// World event resolved.
-    WorldEventResolved { outcome: bool },
+    WorldEventResolved(WorldEventResolvedResponse),
 
     // ========== MULTIPLAYER RESPONSES ==========
     /// Multiplayer game result submitted successfully.
-    MultiplayerResultSubmitted {
-        xp_earned: u64,
-        coins_earned: u64,
-        is_winner: bool,
-    },
+    MultiplayerResultSubmitted(MultiplayerResultResponse),
 }
 
 /// Messages sent between chains for hub aggregation.
@@ -744,7 +900,10 @@ pub enum ArcadeError {
 impl ArcadeError {
     /// Convert to an ArcadeResponse::Error.
     pub fn into_response(self) -> ArcadeResponse {
-        ArcadeResponse::Error(self.to_string())
+        ArcadeResponse::Error(ErrorResponse {
+            success: false,
+            error: self.to_string(),
+        })
     }
 }
 

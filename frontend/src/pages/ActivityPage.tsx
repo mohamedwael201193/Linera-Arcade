@@ -6,6 +6,11 @@
  * - Game scores
  * - Daily bonus claims
  * - Wins and payouts
+ * 
+ * LINERA-NATIVE ARCHITECTURE:
+ * - Uses polling (1s) instead of WebSockets for real-time updates
+ * - Polling is deterministic, ordered, and consistent with blockchain state
+ * - No race conditions or duplicate updates
  */
 
 import { useEffect } from 'react';
@@ -13,6 +18,9 @@ import { usePredictions } from '../hooks/usePredictions';
 import { useArcade } from '../hooks/useArcade';
 import { formatCoins } from '../types';
 import { ActivityLogEntry } from '../lib/api/backendApi';
+
+// Polling interval for real-time updates (Linera-native)
+const POLL_INTERVAL = 1000; // 1 second for fast updates
 
 // Activity type icons
 const ACTIVITY_ICONS: Record<string, string> = {
@@ -104,11 +112,12 @@ export function ActivityPage() {
   const { walletAddress } = useArcade();
   const predictions = usePredictions(walletAddress);
   
-  // Auto-refresh activity every 30 seconds
+  // Fast polling for real-time updates (Linera-native approach)
+  // Replaces WebSockets with deterministic polling
   useEffect(() => {
     const interval = setInterval(() => {
       predictions.refreshActivity();
-    }, 30000);
+    }, POLL_INTERVAL);
     
     return () => clearInterval(interval);
   }, [predictions.refreshActivity]);

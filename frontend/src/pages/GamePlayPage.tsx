@@ -85,7 +85,8 @@ export function GamePlayPage() {
     setGameResult(result);
     setGameState('finished');
     
-    // Calculate estimated XP
+    // Show preview XP - actual XP will come from contract after submission
+    // The estimateXp function now returns a fixed ~50 (middle of 30-75 range)
     const estimated = estimateXp(gameType, result.score, result.bonusData);
     setXpEarned(estimated);
   }, [gameType]);
@@ -100,16 +101,17 @@ export function GamePlayPage() {
       // Convert frontend GameType to contract GameType
       const contractGameType = GAME_TYPE_TO_CONTRACT[gameType] as ContractGameType;
       
-      // submitScore returns boolean, bonusData is an optional number
-      const success = await submitScore(
+      // submitScore returns XP info from contract - this is the SINGLE SOURCE OF TRUTH
+      const result = await submitScore(
         contractGameType, 
         gameResult.score, 
         gameResult.bonusData
       );
       
-      if (success) {
-        // Estimate XP earned based on game type and score
-        setXpEarned(estimateXp(gameType, gameResult.score, gameResult.bonusData));
+      if (result.success) {
+        // Use XP from contract response - NOT local estimation
+        setXpEarned(result.xpEarned);
+        console.log(`✅ Contract XP: ${result.xpEarned} (total: ${result.totalXp}, level: ${result.level})`);
         setGameState('submitted');
       } else {
         setError('Failed to submit score. Please try again.');

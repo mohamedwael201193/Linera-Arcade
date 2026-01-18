@@ -8,8 +8,9 @@ mod state;
 use std::sync::Arc;
 
 use arcade_hub::{
-    ArcadeHubAbi, ArcadeStats, CryptoAsset, CryptoRound, GameHighScoreEntry, GameScore, GameType,
-    LeaderboardEntry, Operation, Player, Prediction, PredictionStatus, WorldEvent,
+    ArcadeEvent, ArcadeHubAbi, ArcadeStats, CryptoAsset, CryptoRound, GameHighScoreEntry,
+    GamePlayedEvent, GameScore, GameType, LeaderboardEntry, Operation, Player, Prediction,
+    PredictionStatus, WorldEvent,
 };
 use async_graphql::{EmptySubscription, Object, Schema};
 use linera_sdk::{
@@ -251,6 +252,114 @@ impl QueryRoot {
             total_predictions: *self.state.total_predictions.get(),
             total_coins_wagered: *self.state.total_coins_wagered.get(),
         }
+    }
+
+    // ========================================================================
+    // NORMALIZED XP QUERIES (for display - raw XP / normalization_factor)
+    // ========================================================================
+
+    /// Get the current normalization factor.
+    /// Displayed XP = raw XP / normalization_factor
+    async fn normalization_factor(&self) -> i32 {
+        let factor = *self.state.normalization_factor.get();
+        if factor == 0 { 1 } else { factor as i32 }
+    }
+
+    /// Get leaderboard with NORMALIZED XP values for display.
+    /// This divides raw XP by the normalization factor (default: 10).
+    async fn normalized_leaderboard(&self, limit: Option<i32>) -> Vec<LeaderboardEntry> {
+        let limit = limit.unwrap_or(100) as usize;
+        let factor = *self.state.normalization_factor.get();
+        let factor = if factor == 0 { 1 } else { factor };
+        
+        let mut entries = Vec::new();
+
+        self.state
+            .leaderboard
+            .for_each_index_value(|_, entry| {
+                let mut e = entry.into_owned();
+                // Normalize XP for display
+                e.total_xp = e.total_xp / factor;
+                // Recalculate level from normalized XP
+                e.level = arcade_hub::calculate_level(e.total_xp);
+                entries.push(e);
+                Ok(())
+            })
+            .await
+            .ok();
+
+        // Sort by normalized XP descending
+        entries.sort_by(|a, b| b.total_xp.cmp(&a.total_xp));
+
+        // Assign ranks
+        for (i, entry) in entries.iter_mut().enumerate() {
+            entry.rank = (i + 1) as u32;
+        }
+
+        entries.truncate(limit);
+        entries
+    }
+
+    /// Get a player with NORMALIZED XP values for display.
+    async fn normalized_player(&self, wallet: String) -> Option<Player> {
+        let owner = parse_account_owner(&wallet)?;
+        let factor = *self.state.normalization_factor.get();
+        let factor = if factor == 0 { 1 } else { factor };
+        
+        let mut player = self.state.players.get(&owner).await.ok().flatten()?;
+        // Normalize XP for display
+        player.total_xp = player.total_xp / factor;
+        player.level = arcade_hub::calculate_level(player.total_xp);
+        Some(player)
+    }
+
+    // ========================================================================
+    // EVENT QUERIES (for polling-based real-time updates)
+    // ========================================================================
+
+    /// Get recent events from the event log.
+    /// Frontend polls this at 500-1000ms intervals for real-time updates.
+    async fn recent_events(&self, limit: Option<i32>) -> Vec<ArcadeEvent> {
+        let limit = limit.unwrap_or(50) as usize;
+        let count = self.state.event_log.count();
+        
+        let start = if count > limit { count - limit } else { 0 };
+        let mut events = Vec::new();
+        
+        for i in start..count {
+            if let Ok(Some(event)) = self.state.event_log.get(i).await {
+                events.push(event);
+            }
+        }
+        
+        // Return in reverse chronological order
+        events.reverse();
+        events
+    }
+
+    /// Get recent game played events with detailed data.
+    /// Used for activity feed polling.
+    async fn recent_game_events(&self, limit: Option<i32>) -> Vec<GamePlayedEvent> {
+        let limit = limit.unwrap_or(50) as usize;
+        let count = self.state.recent_games.count();
+        
+        let start = if count > limit { count - limit } else { 0 };
+        let mut events = Vec::new();
+        
+        for i in start..count {
+            if let Ok(Some(event)) = self.state.recent_games.get(i).await {
+                events.push(event);
+            }
+        }
+        
+        // Return in reverse chronological order
+        events.reverse();
+        events
+    }
+
+    /// Get the total count of events (for pagination).
+    async fn event_count(&self) -> i32 {
+        self.state.event_log.count() as i32
     }
 
     // ========================================================================

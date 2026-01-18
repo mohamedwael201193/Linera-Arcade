@@ -34,7 +34,13 @@ export interface ArcadeState {
   // Actions
   loadPlayer: () => Promise<void>;
   registerPlayer: (username: string) => Promise<boolean>;
-  submitScore: (gameType: GameType | string, score: number, bonusData?: number) => Promise<boolean>;
+  submitScore: (gameType: GameType | string, score: number, bonusData?: number) => Promise<{
+    success: boolean;
+    xpEarned: number;
+    coinsEarned: number;
+    totalXp: number;
+    level: number;
+  }>;
   refreshPlayer: () => Promise<void>;
 }
 
@@ -163,20 +169,27 @@ export function useArcade(): ArcadeState {
   
   /**
    * Submit a game score (works for single-player and multiplayer games)
+   * Returns XP info from contract - this is the SINGLE SOURCE OF TRUTH for XP
    */
   const submitScore = useCallback(async (
     gameType: GameType | string,
     score: number,
     bonusData?: number
-  ): Promise<boolean> => {
+  ): Promise<{
+    success: boolean;
+    xpEarned: number;
+    coinsEarned: number;
+    totalXp: number;
+    level: number;
+  }> => {
     if (!isAppConnected) {
       setError('Not connected to application');
-      return false;
+      return { success: false, xpEarned: 0, coinsEarned: 0, totalXp: 0, level: 1 };
     }
     
     if (!player) {
       setError('Please register before submitting scores');
-      return false;
+      return { success: false, xpEarned: 0, coinsEarned: 0, totalXp: 0, level: 1 };
     }
     
     setIsSubmitting(true);
@@ -186,18 +199,20 @@ export function useArcade(): ArcadeState {
       // Get Dynamic username for auto-registration if needed
       const dynamicUsername = getDynamicUsername(user as unknown as Record<string, unknown> | null);
       console.log(`🎮 Submitting score: ${score} for ${gameType} (Dynamic username: ${dynamicUsername || 'none'})`);
-      await arcadeApi.submitScore(gameType as GameType, score, bonusData, dynamicUsername);
+      
+      // Submit and get XP from contract response
+      const result = await arcadeApi.submitScore(gameType as GameType, score, bonusData, dynamicUsername);
       
       // Refresh player data to get updated XP
       await loadPlayer();
       
-      console.log(`✅ Score submitted!`);
-      return true;
+      console.log(`✅ Score submitted! XP earned: ${result.xpEarned}`);
+      return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to submit score';
       console.error('Score submission failed:', message);
       setError(message);
-      return false;
+      return { success: false, xpEarned: 0, coinsEarned: 0, totalXp: 0, level: 1 };
     } finally {
       setIsSubmitting(false);
     }

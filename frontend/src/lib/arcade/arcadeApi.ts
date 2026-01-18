@@ -37,41 +37,41 @@ interface PlayerResponse {
   player: Player | null;
 }
 
+/**
+ * Response from registerPlayer mutation
+ * Linera mutations return simple values (the serialized response enum)
+ */
 interface RegisterPlayerResponse {
-  registerPlayer: string | null;
+  registerPlayer: unknown;
 }
 
+/**
+ * Response from submitScore mutation
+ * Linera mutations return simple values - we query player state after to get XP
+ */
 interface SubmitScoreResponse {
-  submitScore: string | null;
+  submitScore: unknown;
 }
 
 // =============================================================================
-// XP CALCULATION (must match contract)
+// XP CALCULATION - Contract is Single Source of Truth
 // =============================================================================
 
-function calculateXP(gameType: GameType, score: number, bonusData?: number): number {
-  switch (gameType) {
-    case GameType.SPEED_CLICKER:
-      return score * 10;
-    case GameType.MEMORY_MATRIX:
-      return score * 100 + (bonusData || 0) * 50;
-    case GameType.REACTION_STRIKE:
-      const base = Math.max(0, 1000 - score);
-      return base * (bonusData || 0);
-    case GameType.MATH_BLITZ:
-      return score * 25 + (bonusData || 0) * 10;
-    case GameType.SNAKE_SPRINT:
-      return score * 15 + (bonusData || 0) * 5;
-    case GameType.AIM_TRAINER:
-      return score * 20 + Math.floor((bonusData || 0) / 10) * 5;
-    case GameType.COLOR_RUSH:
-      return score * 30 + (bonusData || 0) * 10;
-    case GameType.TYPING_BLITZ:
-      return score * 25 + Math.floor((bonusData || 0) / 10) * 5;
-    default:
-      return score;
-  }
-}
+/**
+ * XP is ONLY calculated in the contract. Frontend queries player state after
+ * mutation to determine XP earned.
+ * 
+ * XP ECONOMY RULES (Non-Negotiable):
+ * 1. XP per game is CAPPED at 30-75 XP in the contract
+ * 2. XP is calculated ONCE in the contract only
+ * 3. Frontend queries player state before/after to calculate XP earned
+ * 4. Normalized XP = raw XP / normalization_factor (queried from contract)
+ *
+ * 
+ * This prevents XP explosion bugs like the 100k+ XP issue.
+ */
+
+// REMOVED: function calculateXP(...) - Contract handles all XP calculation
 
 // =============================================================================
 // ARCADE API CLASS
@@ -272,6 +272,7 @@ class ArcadeApiClass {
         username: e.username,
         totalXp: e.totalXp,
         level: e.level,
+        gamesPlayed: e.gamesPlayed || 0,
         rank: e.rank,
       }));
     } catch (error) {
@@ -305,18 +306,20 @@ class ArcadeApiClass {
    * 2. Submits to blockchain (for authenticity and XP calculation)
    * 3. Syncs to backend (for global leaderboard)
    * 
+   * CRITICAL: XP comes ONLY from the contract response - never calculated locally
+   * 
    * @param gameType - Type of game played
    * @param score - Raw score achieved
    * @param bonusData - Optional bonus data (varies by game)
    * @param dynamicUsername - Optional username from Dynamic Wallet for auto-registration
-   * @returns true if score submission was initiated
+   * @returns Object with success status and XP earned from contract
    */
   async submitScore(
     gameType: GameType,
     score: number,
     bonusData?: number,
     dynamicUsername?: string
-  ): Promise<boolean> {
+  ): Promise<{ success: boolean; xpEarned: number; coinsEarned: number; totalXp: number; level: number }> {
     console.log(`🎮 Submitting score: ${score} for ${gameType}`);
     
     const wallet = lineraAdapter.getAddress();
@@ -324,35 +327,49 @@ class ArcadeApiClass {
       throw new Error('No wallet connected');
     }
     
-    // Step 0: Check if player is registered, if not auto-register
-    // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
+    const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
+    if (!autoSignerAddress) {
+      throw new Error('No auto-signer address');
+    }
+    
+    // Step 0: Get player state BEFORE submission to calculate XP diff
+    let playerBefore: Player | null = null;
     try {
-      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
-      if (autoSignerAddress) {
-        const playerCheck = await lineraAdapter.query<PlayerResponse>(
+      const playerCheck = await lineraAdapter.query<PlayerResponse>(
+        GET_PLAYER,
+        { wallet: autoSignerAddress }
+      );
+      playerBefore = playerCheck?.player || null;
+      
+      if (!playerBefore) {
+        console.log('📝 Player not registered, auto-registering...');
+        // Use Dynamic Wallet username if available, otherwise generate default
+        const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
+        console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
+        await this.registerPlayer(username);
+        console.log('✅ Player auto-registered!');
+        // Small delay to ensure registration is processed
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Re-query player to get initial state
+        const recheck = await lineraAdapter.query<PlayerResponse>(
           GET_PLAYER,
           { wallet: autoSignerAddress }
         );
-        
-        if (!playerCheck?.player) {
-          console.log('📝 Player not registered, auto-registering...');
-          // Use Dynamic Wallet username if available, otherwise generate default
-          const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
-          console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
-          await this.registerPlayer(username);
-          console.log('✅ Player auto-registered!');
-          // Small delay to ensure registration is processed
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } else {
-          console.log(`✅ Player already registered as: ${playerCheck.player.username}`);
-        }
+        playerBefore = recheck?.player || null;
+      } else {
+        console.log(`✅ Player already registered as: ${playerBefore.username}`);
       }
     } catch (regErr) {
       console.warn('⚠️ Could not verify/register player:', regErr);
       // Continue anyway - let the contract handle it
     }
     
-    // Step 1: Submit to blockchain
+    const xpBefore = playerBefore?.totalXp ?? 0;
+    console.log(`📊 XP before submission: ${xpBefore}`);
+    
+    // Step 1: Submit score to blockchain
+    // NOTE: Linera mutations don't return complex types, just execute
     await lineraAdapter.mutate<SubmitScoreResponse>(
       SUBMIT_SCORE,
       {
@@ -364,8 +381,30 @@ class ArcadeApiClass {
     
     console.log('✅ Score submitted to blockchain');
     
-    // Step 2: Calculate XP (same formula as contract)
-    const xpEarned = calculateXP(gameType, score, bonusData);
+    // Step 2: Query player state AFTER submission to get XP earned
+    // Small delay to ensure state is updated
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    let playerAfter: Player | null = null;
+    try {
+      const afterCheck = await lineraAdapter.query<PlayerResponse>(
+        GET_PLAYER,
+        { wallet: autoSignerAddress }
+      );
+      playerAfter = afterCheck?.player || null;
+    } catch (err) {
+      console.warn('⚠️ Could not query player after submission:', err);
+    }
+    
+    // Calculate XP earned from state diff
+    const xpAfter = playerAfter?.totalXp ?? xpBefore;
+    const xpEarned = xpAfter - xpBefore;
+    const totalXp = xpAfter;
+    const level = playerAfter?.level ?? 1;
+    // Estimate coins earned (1 coin per 10 XP)
+    const coinsEarned = Math.floor(xpEarned / 10);
+    
+    console.log(`✅ XP earned (from state diff): ${xpEarned} (total: ${totalXp}, level: ${level})`);
     
     // Step 3: Sync to backend (async, don't wait)
     const chainId = lineraAdapter.getChainId();
@@ -376,7 +415,8 @@ class ArcadeApiClass {
         .catch(err => console.warn('⚠️ Failed to sync score to backend:', err));
     }
     
-    return true;
+    // Return XP info for UI display
+    return { success: true, xpEarned, coinsEarned, totalXp, level };
   }
 
   /**

@@ -56,6 +56,7 @@ export interface LeaderboardEntry {
   username: string;
   totalXp: number;
   level: number;
+  gamesPlayed: number;
   rank: number;
 }
 
@@ -208,28 +209,19 @@ export function getGameConfig(gameType: GameType): GameConfig {
   return GAME_CONFIGS[gameType];
 }
 
-// Helper to calculate XP (client-side estimate)
-export function estimateXp(gameType: GameType, score: number, bonusData?: number): number {
-  switch (gameType) {
-    case 'SPEED_CLICKER':
-      return score * 10;
-    case 'MEMORY_MATRIX':
-      return score * 100 + (bonusData || 0) * 50;
-    case 'REACTION_STRIKE':
-      return Math.max(0, 1000 - score) * (bonusData || 0);
-    case 'MATH_BLITZ':
-      return score * 25 + (bonusData || 0) * 10;
-    case 'SNAKE_SPRINT':
-      return score * 15 + (bonusData || 0) * 5;
-    case 'AIM_TRAINER':
-      return score * 20 + Math.floor((bonusData || 0) / 10) * 5;
-    case 'COLOR_RUSH':
-      return score * 30 + (bonusData || 0) * 10;
-    case 'TYPING_BLITZ':
-      return score * 25 + Math.floor((bonusData || 0) / 10) * 5;
-    default:
-      return 0;
-  }
+/**
+ * XP Estimation - DEPRECATED
+ * 
+ * XP is now calculated ONLY by the contract (30-75 XP per game, capped).
+ * This function exists only for backwards compatibility and UI preview.
+ * The ACTUAL XP comes from the contract response after submission.
+ * 
+ * DO NOT USE THIS FOR DISPLAYING FINAL XP - use contract response instead!
+ */
+export function estimateXp(_gameType: GameType, _score: number, _bonusData?: number): number {
+  // Return a fixed estimate - actual XP comes from contract (30-75 range)
+  // This is just for UI preview before submission
+  return 50; // Middle of the 30-75 XP range
 }
 
 // Calculate level from XP

@@ -142,6 +142,9 @@ export const GET_STATS = `
 /**
  * Register a new player
  * The Operation enum in the contract: RegisterPlayer { username: String }
+ * 
+ * NOTE: Linera mutations don't return complex types - just execute the mutation
+ * then query player state to verify registration.
  */
 export const REGISTER_PLAYER = `
   mutation RegisterPlayer($username: String!) {
@@ -152,6 +155,10 @@ export const REGISTER_PLAYER = `
 /**
  * Submit a game score
  * The Operation enum in the contract: SubmitScore { game_type, score, bonus_data }
+ * 
+ * NOTE: Linera mutations don't return complex types directly.
+ * After mutation, query player state to get updated XP.
+ * XP is calculated by contract (30-75 per game, capped).
  */
 export const SUBMIT_SCORE = `
   mutation SubmitScore($gameType: GameType!, $score: Int!, $bonusData: Int) {
@@ -341,6 +348,98 @@ export const CREATE_WORLD_EVENT = `
 export const PLACE_EVENT_PREDICTION = `
   mutation PlaceEventPrediction($event_id: Int!, $prediction: Boolean!, $amount: Int!) {
     placeEventPrediction(eventId: $event_id, prediction: $prediction, amount: $amount)
+  }
+`;
+
+// =============================================================================
+// NORMALIZED XP QUERIES (NEW - for display, divides by normalization_factor)
+// =============================================================================
+
+/**
+ * Get the normalization factor (displayed XP = raw XP / factor)
+ * Default is 10 to fix the 100k XP inflation issue
+ */
+export const GET_NORMALIZATION_FACTOR = `
+  query GetNormalizationFactor {
+    normalizationFactor
+  }
+`;
+
+/**
+ * Get leaderboard with NORMALIZED XP values for display
+ * This is the preferred query for UI - shows corrected XP values
+ */
+export const GET_NORMALIZED_LEADERBOARD = `
+  query GetNormalizedLeaderboard($limit: Int) {
+    normalizedLeaderboard(limit: $limit) {
+      walletAddress
+      username
+      totalXp
+      level
+      rank
+    }
+  }
+`;
+
+/**
+ * Get a player with NORMALIZED XP values for display
+ * Use this for showing player stats in UI
+ */
+export const GET_NORMALIZED_PLAYER = `
+  query GetNormalizedPlayer($wallet: String!) {
+    normalizedPlayer(wallet: $wallet) {
+      owner
+      username
+      totalXp
+      level
+      gamesPlayed
+      registeredAt
+    }
+  }
+`;
+
+// =============================================================================
+// EVENT QUERIES (NEW - for polling-based real-time updates)
+// =============================================================================
+
+/**
+ * Get recent events from the event log
+ * Frontend polls this at 500-1000ms intervals for real-time updates
+ * Linera-native approach: no WebSockets, just deterministic polling
+ */
+export const GET_RECENT_EVENTS = `
+  query GetRecentEvents($limit: Int) {
+    recentEvents(limit: $limit) {
+      id
+      timestamp
+      eventType
+    }
+  }
+`;
+
+/**
+ * Get recent game played events with detailed data
+ * Used for activity feed
+ */
+export const GET_RECENT_GAME_EVENTS = `
+  query GetRecentGameEvents($limit: Int) {
+    recentGameEvents(limit: $limit) {
+      player
+      username
+      gameType
+      score
+      xpEarned
+      timestamp
+    }
+  }
+`;
+
+/**
+ * Get total event count (for pagination)
+ */
+export const GET_EVENT_COUNT = `
+  query GetEventCount {
+    eventCount
   }
 `;
 

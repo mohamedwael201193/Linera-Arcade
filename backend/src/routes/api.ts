@@ -182,6 +182,7 @@ router.get('/leaderboard', async (req, res) => {
       username: p.username,
       totalXp: Number(p.total_xp),
       level: p.level,
+      gamesPlayed: Number(p.games_played || 0),
       rank: Number(p.rank)
     }));
     

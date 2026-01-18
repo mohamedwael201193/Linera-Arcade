@@ -2,7 +2,12 @@
  * useLeaderboard Hook
  * 
  * Manages leaderboard data with automatic polling refresh.
- * Fetches from backend API (no blockchain connection required for reads).
+ * 
+ * LINERA-NATIVE ARCHITECTURE:
+ * - Polling replaces WebSockets (deterministic, no race conditions)
+ * - Backend is read-only mirror of on-chain data
+ * - Contract is single source of truth for XP
+ * - Fast polling (1s) for real-time feel, slower (30s) for background
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -14,8 +19,9 @@ import {
   GameType as GameTypeEnum,
 } from '../lib/arcade';
 
-// Refresh interval (30 seconds)
-const REFRESH_INTERVAL = 30 * 1000;
+// Polling intervals
+const FAST_POLL_INTERVAL = 1000;  // 1 second - for active viewing
+const SLOW_POLL_INTERVAL = 30000; // 30 seconds - for background
 
 /**
  * Leaderboard state returned by the hook
@@ -40,13 +46,25 @@ export interface LeaderboardState {
   // Actions
   refresh: () => Promise<void>;
   getGameHighScores: (gameType: GameType) => GameHighScoreEntry[];
+  setFastPolling: (enabled: boolean) => void;
+}
+
+/**
+ * Hook options
+ */
+interface UseLeaderboardOptions {
+  /** Enable fast 1s polling (for active leaderboard view) */
+  fastPolling?: boolean;
 }
 
 /**
  * Hook for leaderboard data with auto-refresh
  * Fetches directly from backend API - no blockchain connection needed
+ * Uses Linera-native polling instead of WebSockets
  */
-export function useLeaderboard(): LeaderboardState {
+export function useLeaderboard(options: UseLeaderboardOptions = {}): LeaderboardState {
+  const { fastPolling: initialFastPolling = false } = options;
+  
   // State
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [gameHighScores, setGameHighScores] = useState<Record<GameType, GameHighScoreEntry[]>>({
@@ -67,6 +85,7 @@ export function useLeaderboard(): LeaderboardState {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [fastPolling, setFastPolling] = useState(initialFastPolling);
   
   // Track if initial load has happened
   const initialLoadDone = useRef(false);
@@ -98,6 +117,7 @@ export function useLeaderboard(): LeaderboardState {
         username: e.username,
         totalXp: e.totalXp,
         level: e.level,
+        gamesPlayed: e.gamesPlayed || 0,
         rank: e.rank,
       }));
       
@@ -176,16 +196,19 @@ export function useLeaderboard(): LeaderboardState {
     }
   }, [refresh]);
   
-  // Auto-refresh interval
+  // Auto-refresh interval (Linera-native polling)
   useEffect(() => {
+    const interval = fastPolling ? FAST_POLL_INTERVAL : SLOW_POLL_INTERVAL;
+    console.log(`📊 Leaderboard polling: ${interval}ms (${fastPolling ? 'fast' : 'slow'} mode)`);
+    
     const intervalId = setInterval(() => {
       refresh();
-    }, REFRESH_INTERVAL);
+    }, interval);
     
     return () => {
       clearInterval(intervalId);
     };
-  }, [refresh]);
+  }, [refresh, fastPolling]);
   
   return {
     leaderboard,
@@ -196,5 +219,6 @@ export function useLeaderboard(): LeaderboardState {
     lastUpdated,
     refresh,
     getGameHighScores,
+    setFastPolling,
   };
 }

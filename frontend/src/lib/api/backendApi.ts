@@ -71,6 +71,7 @@ export interface BackendLeaderboardEntry {
   username: string;
   totalXp: number;
   level: number;
+  gamesPlayed: number;
   rank: number;
 }
 

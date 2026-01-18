@@ -85,6 +85,8 @@ export interface LeaderboardEntry {
   totalXp: number;
   /** Current level */
   level: number;
+  /** Total games played */
+  gamesPlayed: number;
   /** Position on leaderboard (1-indexed, assigned by query) */
   rank: number;
 }

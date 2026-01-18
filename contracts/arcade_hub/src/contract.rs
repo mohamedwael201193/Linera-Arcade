@@ -6,9 +6,14 @@
 mod state;
 
 use arcade_hub::{
-    validate_username, ArcadeError, ArcadeHubAbi, ArcadeResponse, CryptoRound, GameScore,
-    GameType, InstantiationArgument, LeaderboardEntry, Message, Operation, Player, Prediction,
-    PredictionDirection, PredictionStatus, WorldEvent,
+    validate_username, ArcadeError, ArcadeEvent, ArcadeEventType, ArcadeHubAbi, ArcadeResponse,
+    CryptoRound, GamePlayedEvent, GameScore, GameType, InstantiationArgument, LeaderboardEntry,
+    Message, Operation, Player, Prediction, PredictionDirection, PredictionStatus, WorldEvent,
+    // Response types
+    PlayerRegisteredResponse, ScoreSubmittedResponse, UsernameUpdatedResponse,
+    DailyBonusResponse, CryptoRoundCreatedResponse, CryptoPredictionResponse,
+    CryptoRoundResolvedResponse, WorldEventCreatedResponse, EventPredictionResponse,
+    WorldEventResolvedResponse, MultiplayerResultResponse,
 };
 use linera_sdk::{
     linera_base_types::{AccountOwner, WithContractAbi},
@@ -57,6 +62,11 @@ impl Contract for ArcadeHubContract {
         self.state.prediction_counter.set(0);
         self.state.total_coins_wagered.set(0);
         self.state.total_predictions.set(0);
+        // Initialize XP normalization factor (10 = divide raw XP by 10 for display)
+        // This fixes the 100k XP issue without data migration
+        self.state.normalization_factor.set(10);
+        // Initialize event counter
+        self.state.arcade_event_counter.set(0);
     }
 
     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
@@ -243,7 +253,10 @@ impl ArcadeHubContract {
         // Send sync message to hub if not on hub chain
         self.send_to_hub_if_needed(Message::SyncPlayer(player));
 
-        ArcadeResponse::PlayerRegistered
+        ArcadeResponse::PlayerRegistered(PlayerRegisteredResponse {
+            success: true,
+            message: "Player registered successfully".to_string(),
+        })
     }
 
     /// Handle score submission.
@@ -260,7 +273,8 @@ impl ArcadeHubContract {
             _ => return ArcadeError::PlayerNotRegistered.into_response(),
         };
 
-        // Calculate XP earned
+        // Calculate XP earned (CAPPED: 30-75 XP per game)
+        // XP is calculated ONCE here - frontend NEVER calculates XP
         let xp_earned = game_type.calculate_xp(score, bonus_data);
         
         // Calculate coins earned (1 coin per 10 XP)
@@ -314,6 +328,16 @@ impl ArcadeHubContract {
         let total_xp = *self.state.total_xp_earned.get();
         self.state.total_xp_earned.set(total_xp + xp_earned);
 
+        // Emit GamePlayed event for activity feed
+        self.emit_game_played_event(
+            owner.clone(),
+            player.username.clone(),
+            game_type,
+            score,
+            xp_earned,
+            timestamp,
+        ).await;
+
         // Send sync messages to hub if not on hub chain
         self.send_to_hub_if_needed(Message::SyncScore(game_score));
         self.send_to_hub_if_needed(Message::SyncXpUpdate {
@@ -324,7 +348,15 @@ impl ArcadeHubContract {
             coins: player.coins,
         });
 
-        ArcadeResponse::ScoreSubmitted { xp_earned, coins_earned }
+        // CRITICAL: Return the XP earned so frontend can display it
+        // Frontend MUST use this value, NEVER calculate XP locally
+        ArcadeResponse::ScoreSubmitted(ScoreSubmittedResponse {
+            success: true,
+            xp_earned,
+            coins_earned,
+            total_xp: player.total_xp,
+            level: player.level,
+        })
     }
 
     /// Handle username update.
@@ -363,7 +395,9 @@ impl ArcadeHubContract {
         // Send sync message to hub
         self.send_to_hub_if_needed(Message::SyncPlayer(player));
 
-        ArcadeResponse::UsernameUpdated
+        ArcadeResponse::UsernameUpdated(UsernameUpdatedResponse {
+            success: true,
+        })
     }
 
     /// Handle syncing a player from another chain (hub only).
@@ -483,7 +517,10 @@ impl ArcadeHubContract {
         // Sync to hub
         self.send_to_hub_if_needed(Message::SyncPlayer(player));
 
-        ArcadeResponse::DailyBonusClaimed { coins: 100 }
+        ArcadeResponse::DailyBonusClaimed(DailyBonusResponse {
+            success: true,
+            coins: 100,
+        })
     }
 
     // ========================================================================
@@ -514,7 +551,10 @@ impl ArcadeHubContract {
         // Sync to hub
         self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
 
-        ArcadeResponse::CryptoRoundCreated { round_id }
+        ArcadeResponse::CryptoRoundCreated(CryptoRoundCreatedResponse {
+            success: true,
+            round_id,
+        })
     }
 
     /// Handle placing a crypto price prediction.
@@ -612,7 +652,11 @@ impl ArcadeHubContract {
         self.send_to_hub_if_needed(Message::SyncPrediction(prediction));
         self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
 
-        ArcadeResponse::CryptoPredictionPlaced { prediction_id, odds }
+        ArcadeResponse::CryptoPredictionPlaced(CryptoPredictionResponse {
+            success: true,
+            prediction_id,
+            odds,
+        })
     }
 
     /// Handle resolving a crypto round.
@@ -651,7 +695,10 @@ impl ArcadeHubContract {
         // Sync to hub
         self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
 
-        ArcadeResponse::CryptoRoundResolved { winning_direction }
+        ArcadeResponse::CryptoRoundResolved(CryptoRoundResolvedResponse {
+            success: true,
+            winning_direction,
+        })
     }
 
     // ========================================================================
@@ -683,7 +730,10 @@ impl ArcadeHubContract {
         // Sync to hub
         self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
 
-        ArcadeResponse::WorldEventCreated { event_id }
+        ArcadeResponse::WorldEventCreated(WorldEventCreatedResponse {
+            success: true,
+            event_id,
+        })
     }
 
     /// Handle placing a world event prediction.
@@ -786,7 +836,11 @@ impl ArcadeHubContract {
         self.send_to_hub_if_needed(Message::SyncPrediction(pred));
         self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
 
-        ArcadeResponse::EventPredictionPlaced { prediction_id, odds }
+        ArcadeResponse::EventPredictionPlaced(EventPredictionResponse {
+            success: true,
+            prediction_id,
+            odds,
+        })
     }
 
     /// Handle resolving a world event.
@@ -817,7 +871,10 @@ impl ArcadeHubContract {
         // Sync to hub
         self.send_to_hub_if_needed(Message::SyncWorldEvent(event));
 
-        ArcadeResponse::WorldEventResolved { outcome }
+        ArcadeResponse::WorldEventResolved(WorldEventResolvedResponse {
+            success: true,
+            outcome,
+        })
     }
 
     // ========================================================================
@@ -896,9 +953,9 @@ impl ArcadeHubContract {
         &mut self,
         owner: AccountOwner,
         game_type: String,
-        room_code: String,
+        _room_code: String,
         is_winner: bool,
-        opponent_username: String,
+        _opponent_username: String,
     ) -> ArcadeResponse {
         // Get player
         let mut player = match self.state.players.get(&owner).await {
@@ -907,33 +964,34 @@ impl ArcadeHubContract {
             Err(_) => return ArcadeError::Internal("Failed to get player".to_string()).into_response(),
         };
 
-        // Calculate XP based on game type (IMPROVED REWARDS!)
-        // Winner XP values - much more rewarding!
+        // Calculate XP based on game type (CAPPED REWARDS!)
+        // Multiplayer XP is also capped to prevent inflation
+        // Winner: 50-75 XP, Loser: 15-25 XP (participation)
         let winner_xp: u64 = match game_type.as_str() {
-            "tic-tac-toe" => 200,
-            "connect-four" => 250,
-            "chess" => 500,
-            "checkers" => 350,
-            "rock-paper-scissors" => 150,
-            "word-duel" => 200,
-            "reaction-duel" => 180,
-            "quick-math" => 220,
-            "emoji-race" => 180,
-            _ => 150, // Default for unknown games
+            "chess" => 75,           // Most complex
+            "checkers" => 65,        // Strategic
+            "connect-four" => 55,    // Moderate complexity
+            "tic-tac-toe" => 50,     // Simple
+            "rock-paper-scissors" => 50,
+            "word-duel" => 60,       // Language skill
+            "reaction-duel" => 55,   // Reflexes
+            "quick-math" => 65,      // Math skill
+            "emoji-race" => 55,      // Speed game
+            _ => 50,                 // Default for unknown games
         };
 
-        // Winner gets full XP, loser gets 25% participation XP
+        // Winner gets full XP, loser gets ~30% participation XP
         let xp_earned = if is_winner {
             winner_xp
         } else {
-            winner_xp / 4  // 25% for participation
+            (winner_xp * 30) / 100  // 30% for participation (15-23 XP)
         };
 
-        // Coins: Winner gets 100, loser gets 30 (flat rates for fairness)
+        // Coins: Winner gets 10, loser gets 3 (scaled down with XP)
         let coins_earned = if is_winner {
-            100
+            10
         } else {
-            30
+            3
         };
 
         // Update player stats
@@ -958,6 +1016,8 @@ impl ArcadeHubContract {
         let score_id = *self.state.score_counter.get();
         self.state.score_counter.set(score_id + 1);
 
+        let timestamp = self.runtime.system_time().micros();
+
         // Use GameType::SpeedClicker as placeholder for multiplayer games
         // The game_type string is stored in bonus_data context
         let game_score = GameScore {
@@ -967,7 +1027,7 @@ impl ArcadeHubContract {
             score: if is_winner { 1 } else { 0 }, // 1 = win, 0 = loss
             xp_earned,
             bonus_data: None,
-            timestamp: self.runtime.system_time().micros(),
+            timestamp,
         };
 
         self.state
@@ -982,6 +1042,9 @@ impl ArcadeHubContract {
         let total_xp = *self.state.total_xp_earned.get();
         self.state.total_xp_earned.set(total_xp + xp_earned);
 
+        // Emit multiplayer event
+        self.emit_event(ArcadeEventType::MultiplayerResult, timestamp).await;
+
         // Sync to hub chain
         self.send_to_hub_if_needed(Message::SyncScore(game_score));
         self.send_to_hub_if_needed(Message::SyncXpUpdate {
@@ -992,10 +1055,58 @@ impl ArcadeHubContract {
             coins: player.coins,
         });
 
-        ArcadeResponse::MultiplayerResultSubmitted {
+        ArcadeResponse::MultiplayerResultSubmitted(MultiplayerResultResponse {
+            success: true,
             xp_earned,
             coins_earned,
             is_winner,
-        }
+        })
+    }
+
+    // ========================================================================
+    // EVENT EMISSION HELPERS
+    // ========================================================================
+
+    /// Emit a generic event to the event log.
+    async fn emit_event(&mut self, event_type: ArcadeEventType, timestamp: u64) {
+        let event_id = {
+            let current = *self.state.arcade_event_counter.get();
+            self.state.arcade_event_counter.set(current + 1);
+            current
+        };
+
+        let event = ArcadeEvent {
+            id: event_id,
+            timestamp,
+            event_type,
+        };
+
+        self.state.event_log.push(event);
+    }
+
+    /// Emit a GamePlayed event with detailed game data.
+    async fn emit_game_played_event(
+        &mut self,
+        player: AccountOwner,
+        username: String,
+        game_type: GameType,
+        score: u64,
+        xp_earned: u64,
+        timestamp: u64,
+    ) {
+        // Emit to generic event log
+        self.emit_event(ArcadeEventType::GamePlayed, timestamp).await;
+
+        // Also emit detailed event
+        let detailed_event = GamePlayedEvent {
+            player,
+            username,
+            game_type,
+            score,
+            xp_earned,
+            timestamp,
+        };
+
+        self.state.recent_games.push(detailed_event);
     }
 }

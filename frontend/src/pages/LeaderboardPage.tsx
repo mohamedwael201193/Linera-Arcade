@@ -170,7 +170,7 @@ export function LeaderboardPage() {
                       </span>
                     </td>
                     <td className="px-4 py-4 text-right text-gray-400">
-                      -
+                      {entry.gamesPlayed || 0}
                     </td>
                     <td className="px-4 py-4 text-right">
                       <span className="font-arcade text-neon-yellow">
