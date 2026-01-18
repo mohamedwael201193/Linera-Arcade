@@ -20,7 +20,7 @@ import { formatCoins } from '../types';
 import { ActivityLogEntry } from '../lib/api/backendApi';
 
 // Polling interval for real-time updates (Linera-native)
-const POLL_INTERVAL = 1000; // 1 second for fast updates
+const POLL_INTERVAL = 10000; // 10 seconds - balance between real-time and performance
 
 // Activity type icons
 const ACTIVITY_ICONS: Record<string, string> = {
@@ -112,11 +112,16 @@ export function ActivityPage() {
   const { walletAddress } = useArcade();
   const predictions = usePredictions(walletAddress);
   
-  // Fast polling for real-time updates (Linera-native approach)
-  // Replaces WebSockets with deterministic polling
+  // Initial load with loading spinner
+  useEffect(() => {
+    predictions.refreshActivity(true);
+  }, []);
+  
+  // Background polling for real-time updates (Linera-native approach)
+  // Uses silent refresh (no loading spinner) for better UX
   useEffect(() => {
     const interval = setInterval(() => {
-      predictions.refreshActivity();
+      predictions.refreshActivity(false); // Silent refresh - no spinner
     }, POLL_INTERVAL);
     
     return () => clearInterval(interval);
@@ -178,7 +183,7 @@ export function ActivityPage() {
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-semibold text-white">Recent Activity</h2>
             <button
-              onClick={() => predictions.refreshActivity()}
+              onClick={() => predictions.refreshActivity(true)}
               className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
             >
               🔄 Refresh

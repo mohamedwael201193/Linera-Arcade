@@ -95,7 +95,7 @@ export interface PredictionActions {
   claimDailyBonus: () => Promise<{ success: boolean; coins: number } | null>;
 
   // Activity actions
-  refreshActivity: () => Promise<void>;
+  refreshActivity: (showLoading?: boolean) => Promise<void>;
 
   // Full refresh
   refreshAll: () => Promise<void>;
@@ -381,8 +381,11 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
   // ACTIVITY ACTIONS
   // =============================================================================
 
-  const refreshActivity = useCallback(async () => {
-    setActivityLoading(true);
+  const refreshActivity = useCallback(async (showLoading: boolean = true) => {
+    // Only show loading spinner on initial load or manual refresh
+    if (showLoading) {
+      setActivityLoading(true);
+    }
     setActivityError(null);
     try {
       const activities = await backendApi.getActivityFeed(50);
@@ -390,7 +393,9 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
     } catch (err) {
       setActivityError(err instanceof Error ? err.message : 'Failed to fetch activity');
     } finally {
-      setActivityLoading(false);
+      if (showLoading) {
+        setActivityLoading(false);
+      }
     }
   }, []);
 
