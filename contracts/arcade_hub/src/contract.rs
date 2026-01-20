@@ -9,14 +9,17 @@ use arcade_hub::{
     validate_username, ArcadeError, ArcadeEvent, ArcadeEventType, ArcadeHubAbi, ArcadeResponse,
     CryptoRound, GamePlayedEvent, GameScore, GameType, InstantiationArgument, LeaderboardEntry,
     Message, Operation, Player, Prediction, PredictionDirection, PredictionStatus, WorldEvent,
+    // Multiplayer types
+    MultiplayerGameType, MultiplayerGameRoom, MultiplayerGameStatus, MultiplayerPlayer, MoveData,
     // Response types
     PlayerRegisteredResponse, ScoreSubmittedResponse, UsernameUpdatedResponse,
     DailyBonusResponse, CryptoRoundCreatedResponse, CryptoPredictionResponse,
     CryptoRoundResolvedResponse, WorldEventCreatedResponse, EventPredictionResponse,
-    WorldEventResolvedResponse, MultiplayerResultResponse,
+    WorldEventResolvedResponse, MultiplayerRoomCreatedResponse, MultiplayerRoomJoinedResponse,
+    MoveMadeResponse, GameEndedResponse,
 };
 use linera_sdk::{
-    linera_base_types::{AccountOwner, WithContractAbi},
+    linera_base_types::{AccountOwner, ChainId, WithContractAbi},
     views::{RootView, View},
     Contract, ContractRuntime,
 };
@@ -141,38 +144,34 @@ impl Contract for ArcadeHubContract {
                 self.handle_resolve_world_event(event_id, outcome).await
             }
 
-            // ========== MULTIPLAYER RESULT (HYBRID SYSTEM) ==========
-            Operation::SubmitMultiplayerResult {
-                game_type,
-                room_code,
-                is_winner,
-                opponent_username,
-            } => {
-                self.handle_submit_multiplayer_result(
-                    owner,
-                    game_type,
-                    room_code,
-                    is_winner,
-                    opponent_username,
-                )
-                .await
+            // ========== ON-CHAIN MULTIPLAYER OPERATIONS (Cross-Chain Pattern) ==========
+            Operation::CreateMultiplayerRoom { game_type } => {
+                self.handle_create_multiplayer_room(owner, game_type).await
+            }
+            Operation::JoinMultiplayerRoom { host_chain_id } => {
+                self.handle_join_multiplayer_room(owner, host_chain_id).await
+            }
+            Operation::MakeMove { move_data } => {
+                self.handle_make_move(owner, move_data).await
+            }
+            Operation::ForfeitGame => {
+                self.handle_forfeit_game(owner).await
+            }
+            Operation::ClaimVictoryTimeout => {
+                self.handle_claim_victory_timeout(owner).await
+            }
+            Operation::LeaveRoom => {
+                self.handle_leave_room(owner).await
+            }
+            Operation::ClearRoom => {
+                self.handle_clear_room(owner).await
             }
         }
     }
 
     async fn execute_message(&mut self, message: Self::Message) {
-        // Get the hub chain ID
-        let hub_chain_id = match self.state.hub_chain_id.get() {
-            Some(id) => *id,
-            None => return, // Not initialized yet
-        };
-
-        // Only process messages on the hub chain
-        if self.runtime.chain_id() != hub_chain_id {
-            return;
-        }
-
         match message {
+            // ========== HUB CHAIN MESSAGES (aggregation) ==========
             Message::SyncPlayer(player) => {
                 self.handle_sync_player(player).await;
             }
@@ -205,6 +204,27 @@ impl Contract for ArcadeHubContract {
             } => {
                 self.handle_sync_prediction_result(prediction_id, won, payout)
                     .await;
+            }
+
+            // ========== MULTIPLAYER CROSS-CHAIN MESSAGES ==========
+            Message::JoinRequest { player_chain_id, player_wallet, player_name } => {
+                self.handle_join_request(player_chain_id, player_wallet, player_name).await;
+            }
+            Message::GameStateSync { room } => {
+                self.handle_game_state_sync(room).await;
+            }
+            Message::PlayerLeft { player_chain_id, player_wallet } => {
+                self.handle_player_left(player_chain_id, player_wallet).await;
+            }
+            Message::GameMoveSync { room } => {
+                self.handle_game_move_sync(room).await;
+            }
+            Message::GameEndedSync { host_chain_id, game_type, winner, loser, winner_username, loser_username, is_draw } => {
+                self.handle_game_ended_sync(host_chain_id, game_type, winner, loser, winner_username, loser_username, is_draw).await;
+            }
+            Message::RewardSync { player_wallet, xp_earned, coins_earned, is_winner: _, game_type: _ } => {
+                // Apply rewards to local player data
+                self.apply_rewards_to_player(&player_wallet, xp_earned, coins_earned).await;
             }
         }
     }
@@ -942,132 +962,621 @@ impl ArcadeHubContract {
         }
     }
 
+
     // ========================================================================
-    // MULTIPLAYER RESULT HANDLER (HYBRID SYSTEM)
+    // ON-CHAIN MULTIPLAYER HANDLERS (Cross-Chain Pattern)
+    // Room stored on HOST's chain, joiner sends cross-chain message to join.
     // ========================================================================
 
-    /// Handle submitting a multiplayer game result.
-    /// Games play via WebSocket (fast, no signatures during play),
-    /// then final result is submitted on-chain for XP/coins (1 signature).
-    async fn handle_submit_multiplayer_result(
+    /// Create a new multiplayer game room on YOUR chain.
+    async fn handle_create_multiplayer_room(
         &mut self,
         owner: AccountOwner,
-        game_type: String,
-        _room_code: String,
-        is_winner: bool,
-        _opponent_username: String,
+        game_type: MultiplayerGameType,
     ) -> ArcadeResponse {
-        // Get player
-        let mut player = match self.state.players.get(&owner).await {
+        let player = match self.state.players.get(&owner).await {
             Ok(Some(p)) => p,
             Ok(None) => return ArcadeError::PlayerNotRegistered.into_response(),
             Err(_) => return ArcadeError::Internal("Failed to get player".to_string()).into_response(),
         };
 
-        // Calculate XP based on game type (CAPPED REWARDS!)
-        // Multiplayer XP is also capped to prevent inflation
-        // Winner: 50-75 XP, Loser: 15-25 XP (participation)
-        let winner_xp: u64 = match game_type.as_str() {
-            "chess" => 75,           // Most complex
-            "checkers" => 65,        // Strategic
-            "connect-four" => 55,    // Moderate complexity
-            "tic-tac-toe" => 50,     // Simple
-            "rock-paper-scissors" => 50,
-            "word-duel" => 60,       // Language skill
-            "reaction-duel" => 55,   // Reflexes
-            "quick-math" => 65,      // Math skill
-            "emoji-race" => 55,      // Speed game
-            _ => 50,                 // Default for unknown games
+        // Check if there's an existing room
+        if let Some(existing_room) = self.state.multiplayer_room.get().clone() {
+            // Only block if game is actively in progress
+            // Allow overwriting finished, abandoned, waiting, or old rooms
+            let can_overwrite = match existing_room.status {
+                MultiplayerGameStatus::InProgress => false,
+                MultiplayerGameStatus::Finished 
+                | MultiplayerGameStatus::Draw 
+                | MultiplayerGameStatus::Forfeited 
+                | MultiplayerGameStatus::Abandoned => true,
+                MultiplayerGameStatus::WaitingForPlayer => {
+                    // Allow overwriting if waiting for more than 10 minutes (600 seconds)
+                    let now = self.runtime.system_time().micros();
+                    let age_secs = (now.saturating_sub(existing_room.created_at)) / 1_000_000;
+                    age_secs > 600
+                }
+            };
+            
+            if !can_overwrite {
+                return ArcadeError::GameAlreadyStarted.into_response();
+            }
+            // Clear the old room before creating new one
+            self.state.multiplayer_room.set(None);
+        }
+
+        let host_chain_id = self.runtime.chain_id().to_string();
+        let timestamp = self.runtime.system_time().micros();
+        let room = MultiplayerGameRoom::new_waiting(
+            host_chain_id.clone(),
+            game_type,
+            owner.clone(),
+            player.username.clone(),
+            timestamp,
+        );
+
+        self.state.multiplayer_room.set(Some(room));
+
+        ArcadeResponse::MultiplayerRoomCreated(MultiplayerRoomCreatedResponse {
+            success: true,
+            host_chain_id,
+            game_type,
+        })
+    }
+
+    /// Join an existing multiplayer room by HOST CHAIN ID (passed as String).
+    async fn handle_join_multiplayer_room(
+        &mut self,
+        owner: AccountOwner,
+        host_chain_id_str: String,
+    ) -> ArcadeResponse {
+        // Parse the string to ChainId
+        let host_chain_id: ChainId = match host_chain_id_str.parse() {
+            Ok(id) => id,
+            Err(_) => return ArcadeError::Internal(format!("Invalid host chain ID: {}", host_chain_id_str)).into_response(),
         };
 
-        // Winner gets full XP, loser gets ~30% participation XP
-        let xp_earned = if is_winner {
-            winner_xp
-        } else {
-            (winner_xp * 30) / 100  // 30% for participation (15-23 XP)
+        let player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            Ok(None) => return ArcadeError::PlayerNotRegistered.into_response(),
+            Err(_) => return ArcadeError::Internal("Failed to get player".to_string()).into_response(),
         };
 
-        // Coins: Winner gets 10, loser gets 3 (scaled down with XP)
-        let coins_earned = if is_winner {
-            10
-        } else {
-            3
+        if self.runtime.chain_id() == host_chain_id {
+            return ArcadeError::CannotJoinOwnRoom.into_response();
+        }
+
+        let join_request = Message::JoinRequest {
+            player_chain_id: self.runtime.chain_id(),
+            player_wallet: owner.clone(),
+            player_name: player.username.clone(),
         };
 
-        // Update player stats
-        player.add_xp(xp_earned);
-        player.games_played = player.games_played.saturating_add(1);
-        player.coins = player.coins.saturating_add(coins_earned);
+        self.runtime
+            .prepare_message(join_request)
+            .with_authentication()
+            .send_to(host_chain_id);
 
-        // Save player
-        self.state
-            .players
-            .insert(&owner, player.clone())
-            .expect("Failed to update player");
+        ArcadeResponse::MultiplayerRoomJoined(MultiplayerRoomJoinedResponse {
+            success: true,
+            host_chain_id: host_chain_id.to_string(),
+            game_type: MultiplayerGameType::TicTacToe,
+            opponent_username: String::new(),
+        })
+    }
 
-        // Update leaderboard
-        let leaderboard_entry = LeaderboardEntry::from_player(&player, 0);
-        self.state
-            .leaderboard
-            .insert(&owner, leaderboard_entry.clone())
-            .expect("Failed to update leaderboard");
+    /// Handle incoming JoinRequest from another chain.
+    async fn handle_join_request(
+        &mut self,
+        player_chain_id: ChainId,
+        player_wallet: AccountOwner,
+        player_name: String,
+    ) {
+        let room = match self.state.multiplayer_room.get().clone() {
+            Some(r) => r,
+            None => return,
+        };
 
-        // Create a game score record for activity feed
-        let score_id = *self.state.score_counter.get();
-        self.state.score_counter.set(score_id + 1);
+        if room.status != MultiplayerGameStatus::WaitingForPlayer {
+            return;
+        }
+
+        let mut updated_room = room.clone();
+        updated_room.player_chain_ids[1] = player_chain_id.to_string();
+        updated_room.players[1] = player_wallet.clone();
+        updated_room.usernames[1] = player_name.clone();
 
         let timestamp = self.runtime.system_time().micros();
+        updated_room.initialize_game(timestamp);
 
-        // Use GameType::SpeedClicker as placeholder for multiplayer games
-        // The game_type string is stored in bonus_data context
-        let game_score = GameScore {
-            id: score_id,
-            game_type: GameType::SpeedClicker, // Placeholder - real game type in context
-            player: owner.clone(),
-            score: if is_winner { 1 } else { 0 }, // 1 = win, 0 = loss
-            xp_earned,
-            bonus_data: None,
-            timestamp,
+        self.state.multiplayer_room.set(Some(updated_room.clone()));
+
+        let sync_message = Message::GameStateSync {
+            room: updated_room.clone(),
         };
 
-        self.state
-            .game_scores
-            .insert(&score_id, game_score.clone())
-            .expect("Failed to save score");
+        self.runtime
+            .prepare_message(sync_message)
+            .with_authentication()
+            .send_to(player_chain_id);
+    }
 
-        // Update global stats
-        let total_games = *self.state.total_games_played.get();
-        self.state.total_games_played.set(total_games + 1);
+    async fn handle_game_state_sync(&mut self, room: MultiplayerGameRoom) {
+        self.state.multiplayer_room.set(Some(room));
+    }
 
-        let total_xp = *self.state.total_xp_earned.get();
-        self.state.total_xp_earned.set(total_xp + xp_earned);
+    async fn handle_player_left(&mut self, _player_chain_id: ChainId, _player_wallet: AccountOwner) {
+        if let Some(room) = self.state.multiplayer_room.get() {
+            if room.status == MultiplayerGameStatus::WaitingForPlayer {
+                self.state.multiplayer_room.set(None);
+            }
+        }
+    }
 
-        // Emit multiplayer event
+    async fn handle_game_move_sync(&mut self, room: MultiplayerGameRoom) {
+        self.state.multiplayer_room.set(Some(room));
+    }
+
+    async fn handle_game_ended_sync(
+        &mut self,
+        _host_chain_id: ChainId,
+        game_type: MultiplayerGameType,
+        winner: Option<AccountOwner>,
+        loser: Option<AccountOwner>,
+        _winner_username: String,
+        _loser_username: String,
+        is_draw: bool,
+    ) {
+        let timestamp = self.runtime.system_time().micros();
+
+        if is_draw {
+            let xp = game_type.draw_xp();
+            let coins = xp / 5;
+            if let Some(w) = &winner {
+                self.award_multiplayer_rewards(w, xp, coins).await;
+            }
+            if let Some(l) = &loser {
+                self.award_multiplayer_rewards(l, xp, coins).await;
+            }
+        } else {
+            if let Some(w) = &winner {
+                self.award_multiplayer_rewards(w, game_type.winner_xp(), game_type.winner_coins()).await;
+            }
+            if let Some(l) = &loser {
+                self.award_multiplayer_rewards(l, game_type.loser_xp(), game_type.loser_coins()).await;
+            }
+        }
+
+        let total = *self.state.total_multiplayer_games.get();
+        self.state.total_multiplayer_games.set(total + 1);
         self.emit_event(ArcadeEventType::MultiplayerResult, timestamp).await;
+        self.state.multiplayer_room.set(None);
+    }
 
-        // Sync to hub chain
-        self.send_to_hub_if_needed(Message::SyncScore(game_score));
-        self.send_to_hub_if_needed(Message::SyncXpUpdate {
-            wallet_address: owner,
-            total_xp: player.total_xp,
-            level: player.level,
-            games_played: player.games_played,
-            coins: player.coins,
-        });
+    async fn handle_leave_room(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        let room = match self.state.multiplayer_room.get().clone() {
+            Some(r) => r,
+            None => return ArcadeError::RoomNotFound.into_response(),
+        };
 
-        ArcadeResponse::MultiplayerResultSubmitted(MultiplayerResultResponse {
+        if room.players[0] != owner && room.players[1] != owner {
+            return ArcadeError::NotAuthenticated.into_response();
+        }
+
+        if room.status == MultiplayerGameStatus::InProgress {
+            return self.handle_forfeit_game(owner).await;
+        }
+
+        self.state.multiplayer_room.set(None);
+
+        ArcadeResponse::GameEnded(GameEndedResponse {
             success: true,
+            winner: None,
+            xp_earned: 0,
+            coins_earned: 0,
+        })
+    }
+
+    /// Force clear room state - allows resetting stuck/abandoned rooms
+    async fn handle_clear_room(&mut self, _owner: AccountOwner) -> ArcadeResponse {
+        // Simply clear the room - anyone on this chain can reset it
+        // This is needed when rooms get stuck in bad states
+        self.state.multiplayer_room.set(None);
+        
+        ArcadeResponse::GameEnded(GameEndedResponse {
+            success: true,
+            winner: None,
+            xp_earned: 0,
+            coins_earned: 0,
+        })
+    }
+
+    async fn handle_make_move(
+        &mut self,
+        owner: AccountOwner,
+        move_data: MoveData,
+    ) -> ArcadeResponse {
+        let mut room = match self.state.multiplayer_room.get().clone() {
+            Some(r) => r,
+            None => return ArcadeError::RoomNotFound.into_response(),
+        };
+
+        if room.status != MultiplayerGameStatus::InProgress {
+            return ArcadeError::GameNotInProgress.into_response();
+        }
+
+        let player_index = if room.players[0] == owner {
+            MultiplayerPlayer::One
+        } else if room.players[1] == owner {
+            MultiplayerPlayer::Two
+        } else {
+            return ArcadeError::NotAuthenticated.into_response();
+        };
+
+        // QuickMath is a race - no turn enforcement
+        // Other games require turn-based play
+        if room.game_type != MultiplayerGameType::QuickMath && room.current_turn != player_index {
+            return ArcadeError::NotYourTurn.into_response();
+        }
+
+        let timestamp = self.runtime.system_time().micros();
+        room.last_move_at = timestamp;
+
+        let mut game_ended = false;
+        let mut winner: Option<MultiplayerPlayer> = None;
+
+        match room.game_type {
+            MultiplayerGameType::TicTacToe => {
+                if let Some(ref mut board) = room.tic_tac_toe_board {
+                    let pos = move_data.primary as u8;
+                    if !board.make_move(pos, player_index) {
+                        return ArcadeError::InvalidMove.into_response();
+                    }
+                    if let Some(w) = board.check_winner() {
+                        game_ended = true;
+                        winner = Some(w);
+                        room.status = MultiplayerGameStatus::Finished;
+                        room.winner = Some(w);
+                    } else if board.is_full() {
+                        game_ended = true;
+                        room.status = MultiplayerGameStatus::Draw;
+                    }
+                }
+            }
+            MultiplayerGameType::ConnectFour => {
+                if let Some(ref mut board) = room.connect_four_board {
+                    let col = move_data.primary as u8;
+                    if board.drop_piece(col, player_index).is_none() {
+                        return ArcadeError::InvalidMove.into_response();
+                    }
+                    if let Some(w) = board.check_winner() {
+                        game_ended = true;
+                        winner = Some(w);
+                        room.status = MultiplayerGameStatus::Finished;
+                        room.winner = Some(w);
+                    } else if board.is_full() {
+                        game_ended = true;
+                        room.status = MultiplayerGameStatus::Draw;
+                    }
+                }
+            }
+            MultiplayerGameType::QuickMath => {
+                if let Some(ref mut state) = room.quick_math_state {
+                    let answer = move_data.primary;
+                    let (is_correct, _round_complete, finished) = state.submit_answer(player_index, answer);
+                    
+                    if !is_correct {
+                        return ArcadeError::InvalidMove.into_response();
+                    }
+                    
+                    if finished {
+                        game_ended = true;
+                        winner = state.get_winner();
+                        room.status = if winner.is_some() {
+                            MultiplayerGameStatus::Finished
+                        } else {
+                            MultiplayerGameStatus::Draw
+                        };
+                        room.winner = winner;
+                    }
+                    // Note: If round_complete but not finished, next problem is already generated
+                    // Turn does NOT switch for QuickMath - it's a race
+                }
+            }
+            MultiplayerGameType::Chess => {
+                let move_str = match &move_data.secondary {
+                    Some(s) => s.clone(),
+                    None => return ArcadeError::InvalidMove.into_response(),
+                };
+                
+                if let Some(ref mut board) = room.chess_board {
+                    let is_white = player_index == MultiplayerPlayer::One;
+                    if !board.make_move(&move_str, is_white) {
+                        return ArcadeError::InvalidMove.into_response();
+                    }
+                    // Board state and FEN are now updated on-chain
+                }
+            }
+            MultiplayerGameType::Checkers => {
+                let move_str = match &move_data.secondary {
+                    Some(s) => s.clone(),
+                    None => return ArcadeError::InvalidMove.into_response(),
+                };
+                
+                if let Some(ref mut board) = room.checkers_board {
+                    let is_player_one = player_index == MultiplayerPlayer::One;
+                    if !board.make_move(&move_str, is_player_one) {
+                        return ArcadeError::InvalidMove.into_response();
+                    }
+                    
+                    // Check for winner (opponent has no pieces)
+                    if let Some(w) = board.check_winner() {
+                        game_ended = true;
+                        winner = Some(w);
+                        room.status = MultiplayerGameStatus::Finished;
+                        room.winner = Some(w);
+                    }
+                }
+            }
+        }
+
+        // QuickMath doesn't switch turns (both players can answer anytime)
+        // Other games do switch turns
+        if !game_ended && room.game_type != MultiplayerGameType::QuickMath {
+            room.current_turn = room.current_turn.other();
+        }
+
+        self.state.multiplayer_room.set(Some(room.clone()));
+
+        let opponent_chain_str = if room.players[0] == owner {
+            &room.player_chain_ids[1]
+        } else {
+            &room.player_chain_ids[0]
+        };
+
+        if !opponent_chain_str.is_empty() {
+            if let Ok(opponent_chain) = opponent_chain_str.parse::<ChainId>() {
+                let sync_message = Message::GameMoveSync { room: room.clone() };
+                self.runtime
+                    .prepare_message(sync_message)
+                    .with_authentication()
+                    .send_to(opponent_chain);
+            }
+        }
+
+        let (xp_earned, coins_earned) = if game_ended {
+            self.finalize_multiplayer_game(&room).await
+        } else {
+            (None, None)
+        };
+
+        ArcadeResponse::MoveMade(MoveMadeResponse {
+            success: true,
+            game_ended,
+            winner,
             xp_earned,
             coins_earned,
-            is_winner,
         })
+    }
+
+    async fn handle_forfeit_game(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        let mut room = match self.state.multiplayer_room.get().clone() {
+            Some(r) => r,
+            None => return ArcadeError::RoomNotFound.into_response(),
+        };
+
+        if room.status != MultiplayerGameStatus::InProgress {
+            return ArcadeError::GameNotInProgress.into_response();
+        }
+
+        let forfeit_player = if room.players[0] == owner {
+            MultiplayerPlayer::One
+        } else if room.players[1] == owner {
+            MultiplayerPlayer::Two
+        } else {
+            return ArcadeError::NotAuthenticated.into_response();
+        };
+
+        room.winner = Some(forfeit_player.other());
+        room.status = MultiplayerGameStatus::Forfeited;
+
+        self.state.multiplayer_room.set(Some(room.clone()));
+
+        let opponent_chain_str = if room.players[0] == owner {
+            &room.player_chain_ids[1]
+        } else {
+            &room.player_chain_ids[0]
+        };
+
+        if !opponent_chain_str.is_empty() {
+            if let Ok(opponent_chain) = opponent_chain_str.parse::<ChainId>() {
+                let sync_message = Message::GameMoveSync { room: room.clone() };
+                self.runtime
+                    .prepare_message(sync_message)
+                    .with_authentication()
+                    .send_to(opponent_chain);
+            }
+        }
+
+        let (xp, coins) = self.finalize_multiplayer_game(&room).await;
+
+        ArcadeResponse::GameEnded(GameEndedResponse {
+            success: true,
+            winner: room.winner,
+            xp_earned: xp.unwrap_or(0),
+            coins_earned: coins.unwrap_or(0),
+        })
+    }
+
+    async fn handle_claim_victory_timeout(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        let mut room = match self.state.multiplayer_room.get().clone() {
+            Some(r) => r,
+            None => return ArcadeError::RoomNotFound.into_response(),
+        };
+
+        if room.status != MultiplayerGameStatus::InProgress {
+            return ArcadeError::GameNotInProgress.into_response();
+        }
+
+        let current_time = self.runtime.system_time().micros();
+        if !room.is_timed_out(current_time) {
+            return ArcadeError::OpponentNotTimedOut.into_response();
+        }
+
+        let winner = room.current_turn.other();
+
+        if room.players[winner.index()] != owner {
+            return ArcadeError::NotAuthenticated.into_response();
+        }
+
+        room.winner = Some(winner);
+        room.status = MultiplayerGameStatus::Abandoned;
+
+        self.state.multiplayer_room.set(Some(room.clone()));
+
+        let opponent_chain_str = if room.players[0] == owner {
+            &room.player_chain_ids[1]
+        } else {
+            &room.player_chain_ids[0]
+        };
+
+        if !opponent_chain_str.is_empty() {
+            if let Ok(opponent_chain) = opponent_chain_str.parse::<ChainId>() {
+                let sync_message = Message::GameMoveSync { room: room.clone() };
+                self.runtime
+                    .prepare_message(sync_message)
+                    .with_authentication()
+                    .send_to(opponent_chain);
+            }
+        }
+
+        let (xp, coins) = self.finalize_multiplayer_game(&room).await;
+
+        ArcadeResponse::GameEnded(GameEndedResponse {
+            success: true,
+            winner: room.winner,
+            xp_earned: xp.unwrap_or(0),
+            coins_earned: coins.unwrap_or(0),
+        })
+    }
+
+    async fn finalize_multiplayer_game(&mut self, room: &MultiplayerGameRoom) -> (Option<u64>, Option<u64>) {
+        let timestamp = self.runtime.system_time().micros();
+        let is_draw = room.status == MultiplayerGameStatus::Draw;
+        let my_chain = self.runtime.chain_id();
+
+        // Calculate rewards based on game outcome
+        let (winner_xp, winner_coins) = if is_draw {
+            (room.game_type.draw_xp(), room.game_type.draw_xp() / 5)
+        } else {
+            (room.game_type.winner_xp(), room.game_type.winner_coins())
+        };
+        let (loser_xp, loser_coins) = (room.game_type.loser_xp(), room.game_type.loser_coins());
+
+        // Send reward messages to BOTH players' chains
+        for (i, player_chain_str) in room.player_chain_ids.iter().enumerate() {
+            if player_chain_str.is_empty() {
+                continue;
+            }
+            
+            let (xp, coins, is_winner) = if is_draw {
+                (winner_xp, winner_coins, false) // Both get draw rewards
+            } else if let Some(winner_player) = room.winner {
+                if i == winner_player.index() {
+                    (winner_xp, winner_coins, true)
+                } else {
+                    (loser_xp, loser_coins, false)
+                }
+            } else {
+                continue;
+            };
+            
+            // Send reward to this player's chain
+            if let Ok(player_chain) = player_chain_str.parse::<ChainId>() {
+                // If this is the current chain, apply locally
+                if player_chain == my_chain {
+                    self.apply_rewards_to_player(&room.players[i], xp, coins).await;
+                } else {
+                    // Send cross-chain reward message
+                    let reward_msg = Message::RewardSync {
+                        player_wallet: room.players[i].clone(),
+                        xp_earned: xp,
+                        coins_earned: coins,
+                        is_winner,
+                        game_type: room.game_type,
+                    };
+                    self.runtime
+                        .prepare_message(reward_msg)
+                        .with_authentication()
+                        .send_to(player_chain);
+                }
+            }
+        }
+
+        let total = *self.state.total_multiplayer_games.get();
+        self.state.total_multiplayer_games.set(total + 1);
+        self.emit_event(ArcadeEventType::MultiplayerResult, timestamp).await;
+
+        if let Some(hub_chain_id) = self.state.hub_chain_id.get() {
+            let hub = *hub_chain_id;
+            if my_chain != hub {
+                let host_chain = if let Ok(id) = room.host_chain_id.parse::<ChainId>() {
+                    id
+                } else {
+                    my_chain
+                };
+                
+                let msg = Message::GameEndedSync {
+                    host_chain_id: host_chain,
+                    game_type: room.game_type,
+                    winner: room.winner.map(|w| room.players[w.index()].clone()),
+                    loser: room.winner.map(|w| room.players[w.other().index()].clone()),
+                    winner_username: room.winner.map(|w| room.usernames[w.index()].clone()).unwrap_or_default(),
+                    loser_username: room.winner.map(|w| room.usernames[w.other().index()].clone()).unwrap_or_default(),
+                    is_draw,
+                };
+                self.runtime.prepare_message(msg).with_authentication().send_to(hub);
+            }
+        }
+
+        // Return XP/coins for the player who made the winning move (for response)
+        let xp = if is_draw {
+            Some(winner_xp)
+        } else if room.winner.is_some() {
+            Some(winner_xp)
+        } else {
+            None
+        };
+
+        let coins = xp.map(|_| winner_coins);
+        (xp, coins)
+    }
+
+    async fn award_multiplayer_rewards(&mut self, owner: &AccountOwner, xp: u64, coins: u64) {
+        // This is called on the HOST's chain, but we need to reward both players
+        // The host player's data is on this chain, but the joiner's data is on their chain
+        // So this only updates local chain state
+        self.apply_rewards_to_player(owner, xp, coins).await;
+    }
+    
+    /// Apply rewards to a player on THIS chain (local state only).
+    async fn apply_rewards_to_player(&mut self, owner: &AccountOwner, xp: u64, coins: u64) {
+        if let Ok(Some(mut player)) = self.state.players.get(owner).await {
+            player.add_xp(xp);
+            player.coins = player.coins.saturating_add(coins);
+            player.games_played = player.games_played.saturating_add(1);
+
+            let _ = self.state.players.insert(owner, player.clone());
+
+            let entry = LeaderboardEntry::from_player(&player, 0);
+            let _ = self.state.leaderboard.insert(owner, entry);
+        }
     }
 
     // ========================================================================
     // EVENT EMISSION HELPERS
     // ========================================================================
 
-    /// Emit a generic event to the event log.
     async fn emit_event(&mut self, event_type: ArcadeEventType, timestamp: u64) {
         let event_id = {
             let current = *self.state.arcade_event_counter.get();
@@ -1084,7 +1593,6 @@ impl ArcadeHubContract {
         self.state.event_log.push(event);
     }
 
-    /// Emit a GamePlayed event with detailed game data.
     async fn emit_game_played_event(
         &mut self,
         player: AccountOwner,
@@ -1094,10 +1602,8 @@ impl ArcadeHubContract {
         xp_earned: u64,
         timestamp: u64,
     ) {
-        // Emit to generic event log
         self.emit_event(ArcadeEventType::GamePlayed, timestamp).await;
 
-        // Also emit detailed event
         let detailed_event = GamePlayedEvent {
             player,
             username,
@@ -1106,7 +1612,6 @@ impl ArcadeHubContract {
             xp_earned,
             timestamp,
         };
-
         self.state.recent_games.push(detailed_event);
     }
 }

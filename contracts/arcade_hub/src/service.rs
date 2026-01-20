@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use arcade_hub::{
     ArcadeEvent, ArcadeHubAbi, ArcadeStats, CryptoAsset, CryptoRound, GameHighScoreEntry,
-    GamePlayedEvent, GameScore, GameType, LeaderboardEntry, Operation, Player, Prediction,
-    PredictionStatus, WorldEvent,
+    GamePlayedEvent, GameScore, GameType, LeaderboardEntry, MultiplayerGameRoom, MultiplayerGameType,
+    MultiplayerGameStatus, Operation, Player, Prediction, PredictionStatus, WorldEvent,
 };
 use async_graphql::{EmptySubscription, Object, Schema};
 use linera_sdk::{
@@ -597,6 +597,107 @@ impl QueryRoot {
         let owner = parse_account_owner(&wallet)?;
         let player = self.state.players.get(&owner).await.ok().flatten()?;
         Some(player.coins as i32)
+    }
+
+    // ========================================================================
+    // MULTIPLAYER GAME QUERIES (CROSS-CHAIN PATTERN)
+    // Each player queries their OWN chain's multiplayer_room state.
+    // Room is created on HOST's chain, synced via cross-chain messages.
+    // ========================================================================
+
+    /// Get the current multiplayer room state on THIS chain.
+    /// - Host calls this on their chain to see room they created.
+    /// - Joiner calls this on their chain to see synced room state.
+    async fn room(&self) -> Option<MultiplayerGameRoom> {
+        self.state.multiplayer_room.get().clone()
+    }
+
+    /// Alias for room() - get the multiplayer room on this chain.
+    async fn multiplayer_room(&self) -> Option<MultiplayerGameRoom> {
+        self.state.multiplayer_room.get().clone()
+    }
+
+    /// Get the multiplayer game status for this chain's room.
+    async fn multiplayer_game_status(&self) -> Option<MultiplayerGameStatus> {
+        self.state.multiplayer_room.get().as_ref().map(|r| r.status)
+    }
+
+    /// Check if it's the specified player's turn.
+    async fn is_my_turn(&self, wallet: String) -> bool {
+        let owner = match parse_account_owner(&wallet) {
+            Some(o) => o,
+            None => return false,
+        };
+
+        match self.state.multiplayer_room.get().as_ref() {
+            Some(room) => {
+                if room.status != MultiplayerGameStatus::InProgress {
+                    return false;
+                }
+                match room.current_turn {
+                    arcade_hub::MultiplayerPlayer::One => room.players[0] == owner,
+                    arcade_hub::MultiplayerPlayer::Two => room.players[1] == owner,
+                }
+            }
+            None => false,
+        }
+    }
+
+    /// Get the host chain ID of the current room (if any).
+    async fn host_chain_id(&self) -> Option<String> {
+        self.state.multiplayer_room.get().as_ref().map(|r| r.host_chain_id.clone())
+    }
+
+    /// Check if this chain's room is waiting for a player.
+    async fn room_waiting_for_player(&self) -> bool {
+        match self.state.multiplayer_room.get().as_ref() {
+            Some(room) => room.status == MultiplayerGameStatus::WaitingForPlayer,
+            None => false,
+        }
+    }
+
+    /// Get the move history for the current game.
+    async fn move_history(&self) -> Vec<arcade_hub::MoveData> {
+        Vec::new()
+    }
+
+    /// Get the Tic Tac Toe board state from this chain's room.
+    async fn tic_tac_toe_board(&self) -> Option<Vec<i32>> {
+        let room = self.state.multiplayer_room.get().as_ref()?.clone();
+        
+        if room.game_type != MultiplayerGameType::TicTacToe {
+            return None;
+        }
+        let board = room.tic_tac_toe_board.as_ref()?;
+        Some(board.cells.iter().map(|c| match &c.player {
+            None => 0,
+            Some(arcade_hub::MultiplayerPlayer::One) => 1,
+            Some(arcade_hub::MultiplayerPlayer::Two) => 2,
+        }).collect())
+    }
+
+    /// Get the Connect Four board state from this chain's room.
+    async fn connect_four_board(&self) -> Option<Vec<i32>> {
+        let room = self.state.multiplayer_room.get().as_ref()?.clone();
+        
+        if room.game_type != MultiplayerGameType::ConnectFour {
+            return None;
+        }
+        let board = room.connect_four_board.as_ref()?;
+        Some(board.cells.iter().map(|c| match &c.player {
+            None => 0,
+            Some(arcade_hub::MultiplayerPlayer::One) => 1,
+            Some(arcade_hub::MultiplayerPlayer::Two) => 2,
+        }).collect())
+    }
+
+    /// Get the Quick Math game state.
+    async fn quick_math_state(&self) -> Option<arcade_hub::QuickMathState> {
+        let room = self.state.multiplayer_room.get().as_ref()?;
+        if room.game_type != MultiplayerGameType::QuickMath {
+            return None;
+        }
+        room.quick_math_state.clone()
     }
 }
 

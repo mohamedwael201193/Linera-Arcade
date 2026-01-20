@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! State management for the Arcade Hub application.
-//! Extended with Token Economy, Prediction Markets, and Event-Sourced Model.
+//! Extended with Token Economy, Prediction Markets, Event-Sourced Model, and On-Chain Multiplayer.
 
-use arcade_hub::{ArcadeEvent, CryptoRound, GamePlayedEvent, GameScore, LeaderboardEntry, Player, Prediction, WorldEvent};
+use arcade_hub::{ArcadeEvent, CryptoRound, GamePlayedEvent, GameScore, LeaderboardEntry, MultiplayerGameRoom, Player, Prediction, WorldEvent};
 use linera_sdk::{
     linera_base_types::{AccountOwner, ChainId},
     views::{linera_views, LogView, MapView, RegisterView, RootView, ViewStorageContext},
@@ -48,13 +48,13 @@ pub struct ArcadeHubState {
     /// Total predictions made.
     pub total_predictions: RegisterView<u64>,
 
-    // ========== XP NORMALIZATION (NEW) ==========
+    // ========== XP NORMALIZATION ==========
     /// Normalization factor for XP display (raw_xp / factor = displayed_xp).
     /// Default: 10 (to fix the 100k XP issue without data migration).
     /// Can be adjusted later (20, 50, etc.) without resetting leaderboards.
     pub normalization_factor: RegisterView<u64>,
 
-    // ========== EVENT-SOURCED MODEL (NEW) ==========
+    // ========== EVENT-SOURCED MODEL ==========
     /// Event log for activity feed and cross-chain syncing.
     /// Events are append-only and power real-time updates via polling.
     pub event_log: LogView<ArcadeEvent>,
@@ -62,4 +62,21 @@ pub struct ArcadeHubState {
     pub arcade_event_counter: RegisterView<u64>,
     /// Recent game played events for activity feed (more detailed).
     pub recent_games: LogView<GamePlayedEvent>,
+
+    // ========== ON-CHAIN MULTIPLAYER STATE (HUB-BASED) ==========
+    /// Active multiplayer game rooms stored on HUB chain (keyed by room ID).
+    /// This replaces the child-chain approach for cross-browser compatibility.
+    pub active_rooms: MapView<u64, MultiplayerGameRoom>,
+    /// Counter for generating unique room IDs.
+    pub room_counter: RegisterView<u64>,
+    /// Maps player wallet to list of room IDs they're in.
+    pub player_room_ids: MapView<AccountOwner, Vec<u64>>,
+    /// Total multiplayer games played.
+    pub total_multiplayer_games: RegisterView<u64>,
+    
+    // ========== LEGACY (kept for compatibility) ==========
+    /// Current multiplayer game room state (deprecated - use active_rooms).
+    pub multiplayer_room: RegisterView<Option<MultiplayerGameRoom>>,
+    /// Active multiplayer rooms by owner (deprecated - use player_room_ids).
+    pub player_rooms: MapView<AccountOwner, Vec<ChainId>>,
 }

@@ -335,6 +335,43 @@ class LineraAdapterClass {
   }
 
   /**
+   * Execute a GraphQL query with chain sync - syncs from validators first
+   * to ensure we have the latest state including incoming cross-chain messages.
+   * 
+   * Use this when querying for data that may have been updated by cross-chain messages.
+   * 
+   * @param graphqlQuery - GraphQL query string
+   * @param variables - Optional variables for the query
+   * @returns Parsed JSON response
+   */
+  async queryWithSync<T = unknown>(
+    graphqlQuery: string,
+    variables?: Record<string, unknown>
+  ): Promise<T> {
+    if (!this.connection) {
+      throw new Error('Must connect wallet before querying');
+    }
+    if (!this.appConnection) {
+      throw new Error('Must connect to application before querying');
+    }
+
+    // Sync local chain to process incoming cross-chain messages
+    const chainId = this.connection.chainId;
+    console.log(`🔄 Syncing local chain ${chainId.slice(0, 8)} before query...`);
+    
+    try {
+      // Trigger chain sync which downloads certificates and processes inbox
+      await this.connection.client.chain(chainId);
+    } catch (error) {
+      console.warn('⚠️ Chain sync warning:', error);
+      // Continue anyway - the sync may have partially succeeded
+    }
+
+    // Now perform the query
+    return this.query<T>(graphqlQuery, variables);
+  }
+
+  /**
    * Execute a GraphQL mutation against the application
    * This triggers a blockchain transaction that requires wallet signing.
    * 
@@ -415,6 +452,230 @@ class LineraAdapterClass {
    */
   getAutoSignerAddress(): string | null {
     return this.connection?.autoSignerAddress ?? null;
+  }
+
+  /**
+   * Query a specific chain's application with automatic synchronization.
+   * This method syncs the chain state from validators before querying,
+   * which is essential for querying child chains (like game rooms) that
+   * the local node may not yet be aware of.
+   * 
+   * For child chains created by other wallets, we need aggressive synchronization
+   * because:
+   * 1. The local node doesn't own the chain
+   * 2. The chain description blob needs to be downloaded
+   * 3. Application bytecode blobs need to be fetched
+   * 4. Certificates need to be downloaded from validators
+   * 
+   * @param chainId - The chain ID to query
+   * @param graphqlQuery - GraphQL query string
+   * @param variables - Optional variables for the query
+   * @param options - Additional options for the query
+   * @returns Parsed JSON response
+   */
+  async queryChain<T = unknown>(
+    chainId: string,
+    graphqlQuery: string,
+    variables?: Record<string, unknown>,
+    options?: { 
+      maxRetries?: number; 
+      retryDelayMs?: number; 
+      forceSync?: boolean;
+      exponentialBackoff?: boolean;
+    }
+  ): Promise<T> {
+    if (!this.connection) {
+      throw new Error('Must connect wallet before querying');
+    }
+    
+    if (!this.appConnection) {
+      throw new Error('Must connect to application before querying');
+    }
+
+    const maxRetries = options?.maxRetries ?? 10; // Increased from 5 to 10
+    const baseRetryDelayMs = options?.retryDelayMs ?? 2000;
+    const forceSync = options?.forceSync ?? true;
+    const exponentialBackoff = options?.exponentialBackoff ?? true;
+
+    const payload = variables
+      ? { query: graphqlQuery, variables }
+      : { query: graphqlQuery };
+
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Calculate delay with optional exponential backoff
+      const retryDelayMs = exponentialBackoff 
+        ? Math.min(baseRetryDelayMs * Math.pow(1.5, attempt - 1), 10000)
+        : baseRetryDelayMs;
+      
+      try {
+        console.log(`📤 Querying chain ${chainId.slice(0, 8)}... (attempt ${attempt}/${maxRetries})`);
+        
+        // Strategy 1: Get the chain, which triggers synchronize_chain_state
+        // This downloads certificates from validators
+        const chain = await this.connection.client.chain(chainId);
+        
+        // Strategy 2: For non-first attempts, add extra delay to allow
+        // validators to propagate the chain state
+        if (forceSync && attempt > 1) {
+          console.log(`🔄 Force syncing chain ${chainId.slice(0, 8)}... (waiting ${retryDelayMs}ms)`);
+          
+          // Wait before querying to give validators time to sync
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+          
+          // Re-acquire chain reference to trigger another sync
+          await this.connection.client.chain(chainId);
+        }
+        
+        // Strategy 3: Get application on the chain
+        // This may download application bytecode blobs if not present
+        const application = await chain.application(this.appConnection.applicationId);
+        
+        // Query the application
+        const result = await application.query(JSON.stringify(payload));
+        
+        console.log('📥 Raw result from chain:', result);
+        const parsed = JSON.parse(result);
+        console.log('📥 Parsed result:', JSON.stringify(parsed, null, 2));
+        
+        // Check for GraphQL errors
+        if (parsed.errors && parsed.errors.length > 0) {
+          const firstError = parsed.errors[0];
+          // Some errors are transient during sync
+          if (firstError.message?.includes('BlobsNotFound') || 
+              firstError.message?.includes('not found') ||
+              firstError.message?.includes('ChainNotActive')) {
+            console.warn(`⚠️ Chain not fully synced: ${firstError.message}`);
+            if (attempt < maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+              continue;
+            }
+          }
+          console.error('❌ GraphQL errors:', parsed.errors);
+          throw new Error(firstError.message || 'GraphQL error');
+        }
+        
+        // Check if the main data field is null (chain might not be fully synced)
+        const data = parsed.data as T;
+        const dataValues = Object.values(data as Record<string, unknown>);
+        const allNull = dataValues.every(v => v === null);
+        
+        if (allNull && attempt < maxRetries) {
+          console.log(`⚠️ Query returned all null, chain may not be synced yet. Retrying in ${retryDelayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+          continue;
+        }
+        
+        return data;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const errorMsg = lastError.message.toLowerCase();
+        
+        // Handle known transient errors during chain synchronization
+        const isTransientError = 
+          errorMsg.includes('blobsnotfound') ||
+          errorMsg.includes('chain not found') ||
+          errorMsg.includes('not active') ||
+          errorMsg.includes('network') ||
+          errorMsg.includes('timeout');
+        
+        console.error(`❌ Query chain attempt ${attempt} failed:`, lastError.message);
+        
+        if (attempt < maxRetries) {
+          if (isTransientError) {
+            console.log(`🔄 Transient error detected, retrying in ${retryDelayMs}ms...`);
+          } else {
+            console.log(`⏳ Waiting ${retryDelayMs}ms before retry...`);
+          }
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+    
+    throw lastError || new Error(`Failed to query chain ${chainId} after ${maxRetries} attempts`);
+  }
+
+  /**
+   * Force synchronize a chain from validators without querying.
+   * Useful for pre-syncing a chain before performing operations on it.
+   * 
+   * @param chainId - The chain ID to sync
+   * @param maxAttempts - Maximum sync attempts
+   * @returns true if sync succeeded, false otherwise
+   */
+  async syncChain(chainId: string, maxAttempts: number = 5): Promise<boolean> {
+    if (!this.connection) {
+      throw new Error('Must connect wallet before syncing');
+    }
+
+    console.log(`🔄 Syncing chain ${chainId.slice(0, 8)}...`);
+    
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        // Each call to chain() triggers synchronize_chain_state
+        await this.connection.client.chain(chainId);
+        console.log(`✅ Chain ${chainId.slice(0, 8)} synced (attempt ${i + 1})`);
+        
+        // Brief delay between attempts to allow propagation
+        if (i < maxAttempts - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      } catch (error) {
+        console.warn(`⚠️ Sync attempt ${i + 1} failed:`, error);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    return true;
+  }
+
+  /**
+   * Execute a mutation on a specific chain (not the default chain).
+   * This is used for operations that need to run on child chains like game rooms.
+   * 
+   * @param chainId - The chain ID to execute the mutation on
+   * @param graphqlMutation - GraphQL mutation string
+   * @param variables - Variables for the mutation
+   * @returns Parsed JSON response
+   */
+  async mutateOnChain<T = unknown>(
+    chainId: string,
+    graphqlMutation: string,
+    variables?: Record<string, unknown>
+  ): Promise<T> {
+    if (!this.connection) {
+      throw new Error('Must connect wallet before mutating');
+    }
+    
+    if (!this.appConnection) {
+      throw new Error('Must connect to application before mutating');
+    }
+
+    const payload = variables
+      ? { query: graphqlMutation, variables }
+      : { query: graphqlMutation };
+
+    console.log(`📝 Executing mutation on chain ${chainId.slice(0, 8)}...`);
+    
+    // First sync the chain
+    await this.syncChain(chainId, 3);
+    
+    // Get the chain and application
+    const chain = await this.connection.client.chain(chainId);
+    const application = await chain.application(this.appConnection.applicationId);
+    
+    // Execute the mutation
+    const result = await application.query(JSON.stringify(payload));
+    
+    console.log('📥 Mutation result:', result);
+    const parsed = JSON.parse(result);
+    
+    if (parsed.errors && parsed.errors.length > 0) {
+      throw new Error(parsed.errors[0].message || 'Mutation failed');
+    }
+    
+    return parsed.data as T;
   }
 
   /**

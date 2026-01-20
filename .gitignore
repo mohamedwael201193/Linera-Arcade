@@ -56,3 +56,6 @@ finaldo.md
 backend/data/
 ABOUT.md
 logs.md
+finalmultiplayergames.md
+MULTIPLAYER_FIX_SUMMARY.md
+frontend/src/lib/multiplayer/socket.ts.deprecated

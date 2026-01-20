@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! ABI and shared types for the Arcade Hub application.
-//! Extended with Token Economy and Prediction Markets.
+//! Extended with Token Economy, Prediction Markets, and On-Chain Multiplayer.
 
 use async_graphql::{InputObject, Request, Response, SimpleObject, Union};
 use linera_sdk::{
@@ -110,6 +110,990 @@ impl GameType {
             GameType::ColorRush => "Color Rush",
             GameType::TypingBlitz => "Typing Blitz",
         }
+    }
+}
+
+// =============================================================================
+// ON-CHAIN MULTIPLAYER GAME TYPES
+// =============================================================================
+
+/// Multiplayer game types (turn-based only).
+/// Speed/reflex games are NOT supported on-chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, async_graphql::Enum)]
+pub enum MultiplayerGameType {
+    TicTacToe,
+    ConnectFour,
+    Chess,
+    Checkers,
+    QuickMath,
+}
+
+impl MultiplayerGameType {
+    /// Get the game name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            MultiplayerGameType::TicTacToe => "Tic Tac Toe",
+            MultiplayerGameType::ConnectFour => "Connect Four",
+            MultiplayerGameType::Chess => "Chess",
+            MultiplayerGameType::Checkers => "Checkers",
+            MultiplayerGameType::QuickMath => "Quick Math",
+        }
+    }
+
+    /// Get default move timeout in seconds.
+    pub fn default_timeout_secs(&self) -> u64 {
+        match self {
+            MultiplayerGameType::TicTacToe => 30,
+            MultiplayerGameType::ConnectFour => 30,
+            MultiplayerGameType::Chess => 300,      // 5 minutes for chess
+            MultiplayerGameType::Checkers => 120,   // 2 minutes
+            MultiplayerGameType::QuickMath => 15,   // Fast math rounds
+        }
+    }
+
+    /// Calculate XP for winner.
+    pub fn winner_xp(&self) -> u64 {
+        match self {
+            MultiplayerGameType::TicTacToe => 80,
+            MultiplayerGameType::ConnectFour => 90,
+            MultiplayerGameType::Chess => 120,
+            MultiplayerGameType::Checkers => 100,
+            MultiplayerGameType::QuickMath => 75,
+        }
+    }
+
+    /// Calculate XP for loser (participation XP).
+    pub fn loser_xp(&self) -> u64 {
+        match self {
+            MultiplayerGameType::TicTacToe => 25,
+            MultiplayerGameType::ConnectFour => 30,
+            MultiplayerGameType::Chess => 40,
+            MultiplayerGameType::Checkers => 35,
+            MultiplayerGameType::QuickMath => 20,
+        }
+    }
+
+    /// Calculate XP for draw.
+    pub fn draw_xp(&self) -> u64 {
+        (self.winner_xp() + self.loser_xp()) / 2
+    }
+
+    /// Coins for winner.
+    pub fn winner_coins(&self) -> u64 {
+        self.winner_xp() / 5
+    }
+
+    /// Coins for loser.
+    pub fn loser_coins(&self) -> u64 {
+        self.loser_xp() / 5
+    }
+}
+
+/// Player identifier in a multiplayer game.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize, async_graphql::Enum)]
+pub enum MultiplayerPlayer {
+    #[default]
+    One,
+    Two,
+}
+
+impl MultiplayerPlayer {
+    /// Get the other player.
+    pub fn other(&self) -> Self {
+        match self {
+            MultiplayerPlayer::One => MultiplayerPlayer::Two,
+            MultiplayerPlayer::Two => MultiplayerPlayer::One,
+        }
+    }
+
+    /// Get index (0 or 1).
+    pub fn index(&self) -> usize {
+        match self {
+            MultiplayerPlayer::One => 0,
+            MultiplayerPlayer::Two => 1,
+        }
+    }
+}
+
+/// Status of a multiplayer game room.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize, async_graphql::Enum)]
+pub enum MultiplayerGameStatus {
+    #[default]
+    /// Waiting for second player to join.
+    WaitingForPlayer,
+    /// Game is in progress.
+    InProgress,
+    /// Game finished with a winner.
+    Finished,
+    /// Game ended in a draw.
+    Draw,
+    /// Game was forfeited.
+    Forfeited,
+    /// Game was abandoned (timeout).
+    Abandoned,
+}
+
+/// A cell in Tic Tac Toe or similar games.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "CellInput")]
+pub struct Cell {
+    /// The player who placed here, if any.
+    pub player: Option<MultiplayerPlayer>,
+}
+
+/// Tic Tac Toe board (3x3).
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "TicTacToeBoardInput")]
+pub struct TicTacToeBoard {
+    /// 9 cells, row by row: [0,1,2], [3,4,5], [6,7,8]
+    pub cells: [Cell; 9],
+}
+
+impl Default for TicTacToeBoard {
+    fn default() -> Self {
+        Self {
+            cells: [Cell::default(); 9],
+        }
+    }
+}
+
+impl TicTacToeBoard {
+    /// Make a move at the given position (0-8).
+    /// Returns true if the move is valid.
+    pub fn make_move(&mut self, position: u8, player: MultiplayerPlayer) -> bool {
+        if position >= 9 || self.cells[position as usize].player.is_some() {
+            return false;
+        }
+        self.cells[position as usize].player = Some(player);
+        true
+    }
+
+    /// Check if there's a winner.
+    pub fn check_winner(&self) -> Option<MultiplayerPlayer> {
+        const WIN_LINES: [[usize; 3]; 8] = [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8], // rows
+            [0, 3, 6], [1, 4, 7], [2, 5, 8], // columns
+            [0, 4, 8], [2, 4, 6],            // diagonals
+        ];
+
+        for line in WIN_LINES {
+            let [a, b, c] = line;
+            if let (Some(p1), Some(p2), Some(p3)) = (
+                self.cells[a].player,
+                self.cells[b].player,
+                self.cells[c].player,
+            ) {
+                if p1 == p2 && p2 == p3 {
+                    return Some(p1);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if the board is full (draw).
+    pub fn is_full(&self) -> bool {
+        self.cells.iter().all(|c| c.player.is_some())
+    }
+}
+
+/// Connect Four board (6 rows x 7 columns).
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "ConnectFourBoardInput")]
+pub struct ConnectFourBoard {
+    /// 42 cells, stored row by row from bottom to top.
+    /// Index = row * 7 + col
+    pub cells: Vec<Cell>,
+}
+
+impl Default for ConnectFourBoard {
+    fn default() -> Self {
+        Self {
+            cells: vec![Cell::default(); 42],
+        }
+    }
+}
+
+impl ConnectFourBoard {
+    /// Drop a piece in the given column (0-6).
+    /// Returns the row where it landed, or None if column is full.
+    pub fn drop_piece(&mut self, column: u8, player: MultiplayerPlayer) -> Option<u8> {
+        if column >= 7 {
+            return None;
+        }
+        // Find the lowest empty row in this column
+        for row in 0..6u8 {
+            let idx = (row as usize) * 7 + (column as usize);
+            if self.cells[idx].player.is_none() {
+                self.cells[idx].player = Some(player);
+                return Some(row);
+            }
+        }
+        None // Column is full
+    }
+
+    /// Check if there's a winner.
+    pub fn check_winner(&self) -> Option<MultiplayerPlayer> {
+        // Check all possible 4-in-a-row combinations
+        for row in 0..6i32 {
+            for col in 0..7i32 {
+                if let Some(player) = self.get_cell(row, col) {
+                    // Horizontal
+                    if col <= 3 && self.check_line(row, col, 0, 1, player) {
+                        return Some(player);
+                    }
+                    // Vertical
+                    if row <= 2 && self.check_line(row, col, 1, 0, player) {
+                        return Some(player);
+                    }
+                    // Diagonal up-right
+                    if row <= 2 && col <= 3 && self.check_line(row, col, 1, 1, player) {
+                        return Some(player);
+                    }
+                    // Diagonal down-right
+                    if row >= 3 && col <= 3 && self.check_line(row, col, -1, 1, player) {
+                        return Some(player);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_cell(&self, row: i32, col: i32) -> Option<MultiplayerPlayer> {
+        if row < 0 || row >= 6 || col < 0 || col >= 7 {
+            return None;
+        }
+        self.cells[(row as usize) * 7 + (col as usize)].player
+    }
+
+    fn check_line(&self, row: i32, col: i32, dr: i32, dc: i32, player: MultiplayerPlayer) -> bool {
+        for i in 0..4 {
+            if self.get_cell(row + dr * i, col + dc * i) != Some(player) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check if the board is full.
+    pub fn is_full(&self) -> bool {
+        // Only need to check top row
+        (0..7).all(|col| self.cells[5 * 7 + col].player.is_some())
+    }
+}
+
+/// Quick Math game state.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "QuickMathStateInput")]
+pub struct QuickMathState {
+    /// Current round (1-10).
+    pub round: u8,
+    /// Total rounds to play.
+    pub total_rounds: u8,
+    /// Current math problem as string (e.g., "7 + 5").
+    pub current_problem: String,
+    /// Correct answer for current problem.
+    pub correct_answer: i32,
+    /// Scores for each player [player1, player2].
+    pub scores: [u8; 2],
+    /// Who answered current round (None if pending).
+    pub round_winner: Option<MultiplayerPlayer>,
+    /// Seed for deterministic problem generation
+    pub seed: u64,
+}
+
+impl QuickMathState {
+    /// Create a new Quick Math game with initial problem.
+    pub fn new(total_rounds: u8, seed: u64) -> Self {
+        let mut state = Self {
+            round: 0,
+            total_rounds,
+            current_problem: String::new(),
+            correct_answer: 0,
+            scores: [0, 0],
+            round_winner: None,
+            seed,
+        };
+        // Generate first problem immediately
+        state.generate_next_problem();
+        state
+    }
+
+    /// Generate the next problem deterministically using the seed.
+    pub fn generate_next_problem(&mut self) {
+        // Simple LCG for deterministic random numbers
+        self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let rand1 = ((self.seed >> 16) % 20) as i32 + 1; // 1-20
+        
+        self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let rand2 = ((self.seed >> 16) % 20) as i32 + 1; // 1-20
+        
+        self.seed = self.seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let op_type = (self.seed >> 16) % 4;
+        
+        let (problem, answer) = match op_type {
+            0 => (format!("{} + {}", rand1, rand2), rand1 + rand2),
+            1 => {
+                // Ensure subtraction doesn't go negative
+                let (a, b) = if rand1 >= rand2 { (rand1, rand2) } else { (rand2, rand1) };
+                (format!("{} - {}", a, b), a - b)
+            },
+            2 => {
+                // Smaller numbers for multiplication
+                let a = (rand1 % 12) + 1;
+                let b = (rand2 % 12) + 1;
+                (format!("{} × {}", a, b), a * b)
+            },
+            _ => {
+                // Division with clean results
+                let divisor = (rand2 % 10) + 1;
+                let quotient = (rand1 % 10) + 1;
+                let dividend = divisor * quotient;
+                (format!("{} ÷ {}", dividend, divisor), quotient)
+            }
+        };
+        
+        self.round += 1;
+        self.current_problem = problem;
+        self.correct_answer = answer;
+        self.round_winner = None;
+    }
+
+    /// Submit an answer. Returns (is_correct, round_complete, game_finished).
+    pub fn submit_answer(&mut self, player: MultiplayerPlayer, answer: i32) -> (bool, bool, bool) {
+        if self.round_winner.is_some() {
+            return (false, false, false); // Round already answered
+        }
+        
+        let is_correct = answer == self.correct_answer;
+        if is_correct {
+            self.scores[player.index()] += 1;
+            self.round_winner = Some(player);
+            
+            // Check if game finished
+            if self.round >= self.total_rounds {
+                return (true, true, true);
+            }
+            
+            // Generate next problem
+            self.generate_next_problem();
+            return (true, true, false);
+        }
+        
+        (false, false, false)
+    }
+
+    /// Check if game is finished.
+    pub fn is_finished(&self) -> bool {
+        self.round >= self.total_rounds && self.round_winner.is_some()
+    }
+
+    /// Get the winner (player with higher score).
+    pub fn get_winner(&self) -> Option<MultiplayerPlayer> {
+        if !self.is_finished() {
+            return None;
+        }
+        if self.scores[0] > self.scores[1] {
+            Some(MultiplayerPlayer::One)
+        } else if self.scores[1] > self.scores[0] {
+            Some(MultiplayerPlayer::Two)
+        } else {
+            None // Draw
+        }
+    }
+}
+
+/// Union type for different game boards.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GameBoard {
+    TicTacToe(TicTacToeBoard),
+    ConnectFour(ConnectFourBoard),
+    Chess(ChessBoard),
+    Checkers(CheckersBoard),
+    QuickMath(QuickMathState),
+}
+
+/// Chess board with full on-chain state management.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "ChessBoardInput")]
+pub struct ChessBoard {
+    /// Board state as 64 squares (a8=0, h1=63).
+    /// Each square: " "=empty, "P"/"p"=pawn, "R"/"r"=rook, "N"/"n"=knight, 
+    /// "B"/"b"=bishop, "Q"/"q"=queen, "K"/"k"=king
+    /// Uppercase = white, lowercase = black
+    /// NOTE: Using Vec<String> for proper JSON serialization (char doesn't serialize well)
+    pub board: Vec<String>,
+    /// Whose turn: true = white, false = black
+    pub white_turn: bool,
+    /// Castling rights: [white_kingside, white_queenside, black_kingside, black_queenside]
+    pub castling: [bool; 4],
+    /// En passant target square (-1 if none)
+    pub en_passant: i8,
+    /// Halfmove clock (for 50-move rule)
+    pub halfmove: u16,
+    /// Fullmove number
+    pub fullmove: u16,
+    /// Move history in UCI notation (e2e4 format).
+    pub moves: Vec<String>,
+    /// FEN notation for board state (computed from board array).
+    pub fen: String,
+}
+
+impl ChessBoard {
+    /// Create starting position.
+    pub fn new() -> Self {
+        let board: Vec<String> = vec![
+            "r".to_string(), "n".to_string(), "b".to_string(), "q".to_string(), "k".to_string(), "b".to_string(), "n".to_string(), "r".to_string(),  // rank 8 (black)
+            "p".to_string(), "p".to_string(), "p".to_string(), "p".to_string(), "p".to_string(), "p".to_string(), "p".to_string(), "p".to_string(),  // rank 7
+            " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(),  // rank 6
+            " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(),  // rank 5
+            " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(),  // rank 4
+            " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(), " ".to_string(),  // rank 3
+            "P".to_string(), "P".to_string(), "P".to_string(), "P".to_string(), "P".to_string(), "P".to_string(), "P".to_string(), "P".to_string(),  // rank 2 (white)
+            "R".to_string(), "N".to_string(), "B".to_string(), "Q".to_string(), "K".to_string(), "B".to_string(), "N".to_string(), "R".to_string(),  // rank 1
+        ];
+        let mut chess = Self {
+            board,
+            white_turn: true,
+            castling: [true, true, true, true],
+            en_passant: -1,
+            halfmove: 0,
+            fullmove: 1,
+            moves: Vec::new(),
+            fen: String::new(),
+        };
+        chess.update_fen();
+        chess
+    }
+
+    /// Convert square name (e.g., "e2") to index.
+    fn square_to_index(sq: &str) -> Option<usize> {
+        if sq.len() < 2 { return None; }
+        let file = sq.chars().next()? as i32 - 'a' as i32;
+        let rank = sq.chars().nth(1)?.to_digit(10)? as i32;
+        if file < 0 || file > 7 || rank < 1 || rank > 8 { return None; }
+        Some(((8 - rank) * 8 + file) as usize)
+    }
+
+    /// Get piece char from board string
+    fn get_piece(&self, idx: usize) -> char {
+        self.board.get(idx).and_then(|s| s.chars().next()).unwrap_or(' ')
+    }
+
+    /// Set piece on board
+    fn set_piece(&mut self, idx: usize, piece: char) {
+        if idx < 64 {
+            self.board[idx] = piece.to_string();
+        }
+    }
+
+    /// Update FEN string from board state.
+    pub fn update_fen(&mut self) {
+        let mut fen = String::new();
+        
+        // Board position
+        for rank in 0..8 {
+            let mut empty = 0;
+            for file in 0..8 {
+                let piece = self.get_piece(rank * 8 + file);
+                if piece == ' ' {
+                    empty += 1;
+                } else {
+                    if empty > 0 {
+                        fen.push_str(&empty.to_string());
+                        empty = 0;
+                    }
+                    fen.push(piece);
+                }
+            }
+            if empty > 0 {
+                fen.push_str(&empty.to_string());
+            }
+            if rank < 7 {
+                fen.push('/');
+            }
+        }
+        
+        // Active color
+        fen.push(' ');
+        fen.push(if self.white_turn { 'w' } else { 'b' });
+        
+        // Castling
+        fen.push(' ');
+        let mut castle = String::new();
+        if self.castling[0] { castle.push('K'); }
+        if self.castling[1] { castle.push('Q'); }
+        if self.castling[2] { castle.push('k'); }
+        if self.castling[3] { castle.push('q'); }
+        if castle.is_empty() { castle.push('-'); }
+        fen.push_str(&castle);
+        
+        // En passant
+        fen.push(' ');
+        if self.en_passant >= 0 && self.en_passant < 64 {
+            let file = (self.en_passant % 8) as u8 + b'a';
+            let rank = (8 - self.en_passant / 8) as u8 + b'0';
+            fen.push(file as char);
+            fen.push(rank as char);
+        } else {
+            fen.push('-');
+        }
+        
+        // Halfmove and fullmove
+        fen.push_str(&format!(" {} {}", self.halfmove, self.fullmove));
+        
+        self.fen = fen;
+    }
+
+    /// Make a move in UCI format (e.g., "e2e4", "e7e8q" for promotion).
+    /// Returns true if move was valid and executed.
+    pub fn make_move(&mut self, uci_move: &str, is_white: bool) -> bool {
+        // Verify it's the correct player's turn
+        if is_white != self.white_turn {
+            return false;
+        }
+
+        if uci_move.len() < 4 {
+            return false;
+        }
+
+        let from = &uci_move[0..2];
+        let to = &uci_move[2..4];
+        let promotion = if uci_move.len() > 4 { uci_move.chars().nth(4) } else { None };
+
+        let from_idx = match Self::square_to_index(from) {
+            Some(i) => i,
+            None => return false,
+        };
+        let to_idx = match Self::square_to_index(to) {
+            Some(i) => i,
+            None => return false,
+        };
+
+        let piece = self.get_piece(from_idx);
+        let target = self.get_piece(to_idx);
+
+        // Basic validation: must move own piece
+        let is_white_piece = piece.is_uppercase();
+        if piece == ' ' || is_white_piece != is_white {
+            return false;
+        }
+
+        // Cannot capture own piece
+        if target != ' ' && target.is_uppercase() == is_white {
+            return false;
+        }
+
+        // Execute the move
+        self.set_piece(from_idx, ' ');
+        
+        // Handle pawn promotion
+        if let Some(promo_char) = promotion {
+            let promo_piece = if is_white { promo_char.to_uppercase().next().unwrap_or('Q') } 
+                              else { promo_char.to_lowercase().next().unwrap_or('q') };
+            self.set_piece(to_idx, promo_piece);
+        } else {
+            self.set_piece(to_idx, piece);
+        }
+
+        // Handle castling
+        if piece == 'K' || piece == 'k' {
+            let from_file = from_idx % 8;
+            let to_file = to_idx % 8;
+            
+            // Kingside castling
+            if from_file == 4 && to_file == 6 {
+                let rook_from = from_idx + 3;
+                let rook_to = from_idx + 1;
+                let rook = self.get_piece(rook_from);
+                self.set_piece(rook_to, rook);
+                self.set_piece(rook_from, ' ');
+            }
+            // Queenside castling
+            if from_file == 4 && to_file == 2 {
+                let rook_from = from_idx - 4;
+                let rook_to = from_idx - 1;
+                let rook = self.get_piece(rook_from);
+                self.set_piece(rook_to, rook);
+                self.set_piece(rook_from, ' ');
+            }
+            
+            // Remove castling rights for this side
+            if is_white {
+                self.castling[0] = false;
+                self.castling[1] = false;
+            } else {
+                self.castling[2] = false;
+                self.castling[3] = false;
+            }
+        }
+
+        // Handle rook moves affecting castling
+        if piece == 'R' {
+            if from_idx == 63 { self.castling[0] = false; } // h1
+            if from_idx == 56 { self.castling[1] = false; } // a1
+        }
+        if piece == 'r' {
+            if from_idx == 7 { self.castling[2] = false; } // h8
+            if from_idx == 0 { self.castling[3] = false; } // a8
+        }
+
+        // Handle en passant capture
+        if (piece == 'P' || piece == 'p') && to_idx as i8 == self.en_passant {
+            let captured_pawn_idx = if is_white { to_idx + 8 } else { to_idx - 8 };
+            self.set_piece(captured_pawn_idx, ' ');
+        }
+
+        // Update en passant target
+        self.en_passant = -1;
+        if piece == 'P' && from_idx / 8 == 6 && to_idx / 8 == 4 {
+            self.en_passant = (to_idx + 8) as i8;
+        }
+        if piece == 'p' && from_idx / 8 == 1 && to_idx / 8 == 3 {
+            self.en_passant = (to_idx - 8) as i8;
+        }
+
+        // Update halfmove clock
+        if piece == 'P' || piece == 'p' || target != ' ' {
+            self.halfmove = 0;
+        } else {
+            self.halfmove += 1;
+        }
+
+        // Update fullmove number
+        if !is_white {
+            self.fullmove += 1;
+        }
+
+        // Switch turns
+        self.white_turn = !self.white_turn;
+
+        // Record move and update FEN
+        self.moves.push(uci_move.to_string());
+        self.update_fen();
+
+        true
+    }
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "CheckersBoardInput")]
+pub struct CheckersBoard {
+    /// Board state as array of 32 squares (dark squares only).
+    /// 0 = empty, 1 = player1 (red), 2 = player2 (black), 3 = player1 king, 4 = player2 king
+    pub squares: Vec<u8>,
+    /// Move history in "from-to" format (e.g., "20-16").
+    pub moves: Vec<String>,
+}
+
+impl CheckersBoard {
+    /// Create starting position.
+    pub fn new() -> Self {
+        let mut squares = vec![0u8; 32];
+        // Player 2 (Black) pieces at top (indices 0-11)
+        for i in 0..12 {
+            squares[i] = 2;
+        }
+        // Player 1 (Red) pieces at bottom (indices 20-31)
+        for i in 20..32 {
+            squares[i] = 1;
+        }
+        Self {
+            squares,
+            moves: Vec::new(),
+        }
+    }
+
+    /// Check if a piece belongs to a player.
+    fn is_player_piece(&self, idx: usize, is_player_one: bool) -> bool {
+        if idx >= 32 { return false; }
+        let piece = self.squares[idx];
+        if is_player_one {
+            piece == 1 || piece == 3
+        } else {
+            piece == 2 || piece == 4
+        }
+    }
+
+    /// Check if a piece is a king.
+    fn is_king(&self, idx: usize) -> bool {
+        if idx >= 32 { return false; }
+        self.squares[idx] == 3 || self.squares[idx] == 4
+    }
+
+    /// Get adjacent squares for a given position.
+    fn get_adjacent(&self, idx: usize, is_forward: bool) -> Vec<usize> {
+        let row = idx / 4;
+        let col_offset = if row % 2 == 0 { 0 } else { 1 };
+        let mut adj = Vec::new();
+        
+        if is_forward {
+            // Moving "up" (decreasing row for player 1, increasing for player 2)
+            if row > 0 {
+                let left = idx - 4 - (1 - col_offset);
+                let right = idx - 4 + col_offset;
+                if left < 32 && (left / 4) == row - 1 { adj.push(left); }
+                if right < 32 && (right / 4) == row - 1 { adj.push(right); }
+            }
+        } else {
+            // Moving "down"
+            if row < 7 {
+                let left = idx + 4 - (1 - col_offset);
+                let right = idx + 4 + col_offset;
+                if left < 32 && (left / 4) == row + 1 { adj.push(left); }
+                if right < 32 && (right / 4) == row + 1 { adj.push(right); }
+            }
+        }
+        
+        adj
+    }
+
+    /// Make a move. Format: "from-to" (e.g., "20-16").
+    /// Returns true if move was valid and executed.
+    pub fn make_move(&mut self, move_str: &str, is_player_one: bool) -> bool {
+        let parts: Vec<&str> = move_str.split('-').collect();
+        if parts.len() < 2 { return false; }
+        
+        let from: usize = match parts[0].parse() {
+            Ok(n) if n < 32 => n,
+            _ => return false,
+        };
+        let to: usize = match parts[1].parse() {
+            Ok(n) if n < 32 => n,
+            _ => return false,
+        };
+        
+        // Verify piece belongs to player
+        if !self.is_player_piece(from, is_player_one) {
+            return false;
+        }
+        
+        // Verify destination is empty
+        if self.squares[to] != 0 {
+            return false;
+        }
+        
+        let piece = self.squares[from];
+        let is_king = self.is_king(from);
+        let from_row = from / 4;
+        let to_row = to / 4;
+        let row_diff = (to_row as i32 - from_row as i32).abs();
+        
+        // Normal move (1 row)
+        if row_diff == 1 {
+            // Validate direction for non-kings
+            if !is_king {
+                if is_player_one && to_row >= from_row { return false; } // Red moves up
+                if !is_player_one && to_row <= from_row { return false; } // Black moves down
+            }
+            
+            // Execute move
+            self.squares[from] = 0;
+            self.squares[to] = piece;
+        }
+        // Jump move (2 rows)
+        else if row_diff == 2 {
+            // Calculate jumped square
+            let mid_row = (from_row + to_row) / 2;
+            let from_col = from % 4;
+            let to_col = to % 4;
+            
+            // Calculate middle square index
+            let mid_col = if from_row % 2 == 0 {
+                if to_col > from_col { from_col } else { from_col.saturating_sub(1) }
+            } else {
+                if to_col >= from_col { from_col + 1 } else { from_col }
+            };
+            
+            // Adjust for the checkers board indexing
+            let _mid_idx = if mid_row % 2 == 0 {
+                mid_row * 4 + mid_col.min(3)
+            } else {
+                mid_row * 4 + mid_col.min(3)
+            };
+            
+            // Simplified middle calculation
+            let mid_idx = mid_row * 4 + ((from % 4 + to % 4 + if from_row % 2 == 0 { 1 } else { 0 }) / 2).min(3);
+            
+            if mid_idx >= 32 { return false; }
+            
+            // Must jump opponent piece
+            if self.is_player_piece(mid_idx, is_player_one) || self.squares[mid_idx] == 0 {
+                return false;
+            }
+            
+            // Validate direction for non-kings
+            if !is_king {
+                if is_player_one && to_row >= from_row { return false; }
+                if !is_player_one && to_row <= from_row { return false; }
+            }
+            
+            // Execute jump
+            self.squares[from] = 0;
+            self.squares[mid_idx] = 0; // Remove captured piece
+            self.squares[to] = piece;
+        } else {
+            return false;
+        }
+        
+        // King promotion
+        if is_player_one && to_row == 0 && self.squares[to] == 1 {
+            self.squares[to] = 3;
+        }
+        if !is_player_one && to_row == 7 && self.squares[to] == 2 {
+            self.squares[to] = 4;
+        }
+        
+        // Record move
+        self.moves.push(move_str.to_string());
+        
+        true
+    }
+
+    /// Count pieces for each player. Returns (player1_count, player2_count).
+    pub fn count_pieces(&self) -> (u8, u8) {
+        let mut p1 = 0u8;
+        let mut p2 = 0u8;
+        for &sq in &self.squares {
+            if sq == 1 || sq == 3 { p1 += 1; }
+            if sq == 2 || sq == 4 { p2 += 1; }
+        }
+        (p1, p2)
+    }
+
+    /// Check for winner. Returns Some(player) if a player has no pieces.
+    pub fn check_winner(&self) -> Option<MultiplayerPlayer> {
+        let (p1, p2) = self.count_pieces();
+        if p1 == 0 { return Some(MultiplayerPlayer::Two); }
+        if p2 == 0 { return Some(MultiplayerPlayer::One); }
+        None
+    }
+}
+
+/// Move data for different game types.
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "MoveDataInput")]
+pub struct MoveData {
+    /// For TicTacToe: position 0-8.
+    /// For ConnectFour: column 0-6.
+    /// For QuickMath: the answer.
+    pub primary: i32,
+    /// For Chess/Checkers: target position or full move string.
+    pub secondary: Option<String>,
+}
+
+/// Multiplayer room configuration.
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "MultiplayerRoomConfigInput")]
+pub struct MultiplayerRoomConfig {
+    pub game_type: MultiplayerGameType,
+    /// Move timeout in seconds.
+    pub move_timeout_secs: u64,
+    /// For QuickMath: number of rounds.
+    pub rounds: Option<u8>,
+}
+
+/// State of a multiplayer game room (stored on HOST's chain).
+/// Share your host_chain_id with opponents so they can join.
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject)]
+pub struct MultiplayerGameRoom {
+    /// The HOST's chain ID (share this with opponents to join).
+    pub host_chain_id: String,
+    /// The game type.
+    pub game_type: MultiplayerGameType,
+    /// Chain IDs of both players [host_chain, joiner_chain].
+    pub player_chain_ids: [String; 2],
+    /// The two players (wallet addresses).
+    pub players: [AccountOwner; 2],
+    /// Player usernames.
+    pub usernames: [String; 2],
+    /// Whose turn it is.
+    pub current_turn: MultiplayerPlayer,
+    /// Game status.
+    pub status: MultiplayerGameStatus,
+    /// The winner, if any.
+    pub winner: Option<MultiplayerPlayer>,
+    /// When the room was created (microseconds).
+    pub created_at: u64,
+    /// When the last move was made (microseconds).
+    pub last_move_at: u64,
+    /// Move timeout in seconds.
+    pub move_timeout_secs: u64,
+    /// TicTacToe board (if applicable).
+    pub tic_tac_toe_board: Option<TicTacToeBoard>,
+    /// ConnectFour board (if applicable).
+    pub connect_four_board: Option<ConnectFourBoard>,
+    /// QuickMath state (if applicable).
+    pub quick_math_state: Option<QuickMathState>,
+    /// Chess board (if applicable).
+    pub chess_board: Option<ChessBoard>,
+    /// Checkers board (if applicable).
+    pub checkers_board: Option<CheckersBoard>,
+}
+
+impl MultiplayerGameRoom {
+    /// Create a new room waiting for players (on HOST's chain).
+    pub fn new_waiting(
+        host_chain_id: String,
+        game_type: MultiplayerGameType,
+        host: AccountOwner,
+        host_username: String,
+        created_at: u64,
+    ) -> Self {
+        let move_timeout_secs = game_type.default_timeout_secs();
+
+        Self {
+            host_chain_id: host_chain_id.clone(),
+            game_type,
+            player_chain_ids: [host_chain_id, String::new()], // Second slot filled when opponent joins
+            players: [host.clone(), host.clone()], // Second slot filled when opponent joins
+            usernames: [host_username, String::new()],
+            current_turn: MultiplayerPlayer::One,
+            status: MultiplayerGameStatus::WaitingForPlayer,
+            winner: None,
+            created_at,
+            last_move_at: created_at,
+            move_timeout_secs,
+            tic_tac_toe_board: None,
+            connect_four_board: None,
+            quick_math_state: None,
+            chess_board: None,
+            checkers_board: None,
+        }
+    }
+
+    /// Initialize game boards when both players have joined.
+    pub fn initialize_game(&mut self, timestamp: u64) {
+        self.status = MultiplayerGameStatus::InProgress;
+        self.last_move_at = timestamp;
+
+        match self.game_type {
+            MultiplayerGameType::TicTacToe => {
+                self.tic_tac_toe_board = Some(TicTacToeBoard::default());
+            }
+            MultiplayerGameType::ConnectFour => {
+                self.connect_four_board = Some(ConnectFourBoard::default());
+            }
+            MultiplayerGameType::Chess => {
+                self.chess_board = Some(ChessBoard::new());
+            }
+            MultiplayerGameType::Checkers => {
+                self.checkers_board = Some(CheckersBoard::new());
+            }
+            MultiplayerGameType::QuickMath => {
+                // Use timestamp as seed for deterministic problem generation
+                self.quick_math_state = Some(QuickMathState::new(10, timestamp));
+            }
+        }
+    }
+
+    /// Check if the current player has timed out.
+    pub fn is_timed_out(&self, current_time: u64) -> bool {
+        if self.status != MultiplayerGameStatus::InProgress {
+            return false;
+        }
+        let timeout_micros = self.move_timeout_secs * 1_000_000;
+        current_time > self.last_move_at + timeout_micros
     }
 }
 
@@ -666,20 +1650,37 @@ pub enum Operation {
         outcome: bool, // true = YES won, false = NO won
     },
 
-    // ========== MULTIPLAYER RESULT (HYBRID SYSTEM) ==========
-    /// Submit the result of an off-chain multiplayer game.
-    /// Games play via WebSocket for speed, then only final result goes on-chain.
-    /// Winner gets full XP, loser gets participation XP.
-    SubmitMultiplayerResult {
-        /// Game type (tic-tac-toe, chess, checkers, etc.)
-        game_type: String,
-        /// Room code from WebSocket server
-        room_code: String,
-        /// Whether this player won
-        is_winner: bool,
-        /// Opponent's username
-        opponent_username: String,
+    // ========== ON-CHAIN MULTIPLAYER OPERATIONS (Cross-Chain Pattern) ==========
+    /// Create a new multiplayer game room on YOUR chain.
+    /// Share your chain ID with opponents to let them join.
+    CreateMultiplayerRoom {
+        game_type: MultiplayerGameType,
     },
+
+    /// Join an existing multiplayer room by HOST CHAIN ID.
+    /// This sends a cross-chain message to the host's chain.
+    JoinMultiplayerRoom {
+        /// The chain ID of the room host as a string (will be parsed to ChainId).
+        host_chain_id: String,
+    },
+
+    /// Make a move in a multiplayer game.
+    MakeMove {
+        /// Move data (position, column, answer, etc. depending on game type).
+        move_data: MoveData,
+    },
+
+    /// Forfeit the current game.
+    ForfeitGame,
+
+    /// Claim victory if opponent has timed out.
+    ClaimVictoryTimeout,
+
+    /// Leave the current room (if waiting or game over).
+    LeaveRoom,
+
+    /// Force clear/reset room state (for stuck/abandoned rooms).
+    ClearRoom,
 }
 
 // =============================================================================
@@ -768,13 +1769,45 @@ pub struct WorldEventResolvedResponse {
     pub outcome: bool,
 }
 
-/// Response for multiplayer result submission.
+/// Response for multiplayer room creation.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
-pub struct MultiplayerResultResponse {
+pub struct MultiplayerRoomCreatedResponse {
     pub success: bool,
+    /// The HOST CHAIN ID to share with opponents.
+    pub host_chain_id: String,
+    pub game_type: MultiplayerGameType,
+}
+
+/// Response for joining a multiplayer room.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct MultiplayerRoomJoinedResponse {
+    pub success: bool,
+    pub host_chain_id: String,
+    pub game_type: MultiplayerGameType,
+    pub opponent_username: String,
+}
+
+/// Response for making a move.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct MoveMadeResponse {
+    pub success: bool,
+    /// Whether this move ended the game.
+    pub game_ended: bool,
+    /// The winner if game ended.
+    pub winner: Option<MultiplayerPlayer>,
+    /// XP earned if game ended.
+    pub xp_earned: Option<u64>,
+    /// Coins earned if game ended.
+    pub coins_earned: Option<u64>,
+}
+
+/// Response for forfeit or timeout victory.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct GameEndedResponse {
+    pub success: bool,
+    pub winner: Option<MultiplayerPlayer>,
     pub xp_earned: u64,
     pub coins_earned: u64,
-    pub is_winner: bool,
 }
 
 /// Response from contract operations.
@@ -810,8 +1843,14 @@ pub enum ArcadeResponse {
     WorldEventResolved(WorldEventResolvedResponse),
 
     // ========== MULTIPLAYER RESPONSES ==========
-    /// Multiplayer game result submitted successfully.
-    MultiplayerResultSubmitted(MultiplayerResultResponse),
+    /// Multiplayer room created successfully.
+    MultiplayerRoomCreated(MultiplayerRoomCreatedResponse),
+    /// Joined multiplayer room successfully.
+    MultiplayerRoomJoined(MultiplayerRoomJoinedResponse),
+    /// Move made successfully.
+    MoveMade(MoveMadeResponse),
+    /// Game ended (forfeit/timeout).
+    GameEnded(GameEndedResponse),
 }
 
 /// Messages sent between chains for hub aggregation.
@@ -843,6 +1882,56 @@ pub enum Message {
         prediction_id: u64,
         won: bool,
         payout: u64,
+    },
+
+    // ========== MULTIPLAYER CROSS-CHAIN MESSAGES  ==========
+    /// Request to join a multiplayer room on the host's chain.
+    /// Sent from joiner's chain → host's chain.
+    JoinRequest {
+        player_chain_id: ChainId,
+        player_wallet: AccountOwner,
+        player_name: String,
+    },
+    
+    /// Initial game state sync sent from host to joiner after accepting join.
+    /// Sent from host's chain → joiner's chain.
+    GameStateSync {
+        room: MultiplayerGameRoom,
+    },
+    
+    /// Player left the room.
+    /// Sent from leaving player's chain → host's chain (or broadcast).
+    PlayerLeft {
+        player_chain_id: ChainId,
+        player_wallet: AccountOwner,
+    },
+    
+    /// Game move made - broadcast to sync state.
+    /// Sent from active player's chain → opponent's chain.
+    GameMoveSync {
+        room: MultiplayerGameRoom,
+    },
+    
+    /// Game ended notification.
+    /// Sent to both players and HUB for leaderboard sync.
+    GameEndedSync {
+        host_chain_id: ChainId,
+        game_type: MultiplayerGameType,
+        winner: Option<AccountOwner>,
+        loser: Option<AccountOwner>,
+        winner_username: String,
+        loser_username: String,
+        is_draw: bool,
+    },
+    
+    /// Reward sync message - sent from host chain to player's chain
+    /// after multiplayer game ends to award XP and coins.
+    RewardSync {
+        player_wallet: AccountOwner,
+        xp_earned: u64,
+        coins_earned: u64,
+        is_winner: bool,
+        game_type: MultiplayerGameType,
     },
 }
 
@@ -895,6 +1984,28 @@ pub enum ArcadeError {
     BetTooLarge,
     #[error("Prediction not found")]
     PredictionNotFound,
+
+    // ========== MULTIPLAYER ERRORS ==========
+    #[error("Multiplayer room not found")]
+    RoomNotFound,
+    #[error("Room is full")]
+    RoomFull,
+    #[error("Game already in progress")]
+    GameAlreadyStarted,
+    #[error("Not your turn")]
+    NotYourTurn,
+    #[error("Invalid move")]
+    InvalidMove,
+    #[error("Game is not in progress")]
+    GameNotInProgress,
+    #[error("Game already finished")]
+    GameAlreadyFinished,
+    #[error("Opponent has not timed out yet")]
+    OpponentNotTimedOut,
+    #[error("Cannot join your own room")]
+    CannotJoinOwnRoom,
+    #[error("Room is waiting for players")]
+    RoomWaitingForPlayers,
 }
 
 impl ArcadeError {

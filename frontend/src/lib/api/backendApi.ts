@@ -193,6 +193,32 @@ export const backendApi = {
   },
 
   /**
+   * Submit a multiplayer game result (sync with backend)
+   * This updates the player's XP/coins and logs the activity
+   */
+  async submitMultiplayerResult(
+    wallet: string,
+    gameType: string,
+    roomCode: string,
+    isWinner: boolean,
+    opponentUsername: string,
+    xpEarned: number,
+    coinsEarned: number,
+    chainId?: string
+  ): Promise<{ success: boolean; new_total_xp: number }> {
+    return post('/multiplayer/result', {
+      wallet_address: wallet.toLowerCase(),
+      game_type: gameType,
+      room_code: roomCode,
+      is_winner: isWinner,
+      opponent_username: opponentUsername,
+      xp_earned: xpEarned,
+      coins_earned: coinsEarned,
+      chain_id: chainId,
+    });
+  },
+
+  /**
    * Get recent scores
    */
   async getRecentScores(limit: number = 50): Promise<BackendScore[]> {

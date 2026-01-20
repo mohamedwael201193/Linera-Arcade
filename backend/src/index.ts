@@ -3,7 +3,9 @@
  * 
  * Express server that provides REST API for the global leaderboard.
  * Uses PostgreSQL for production, falls back to in-memory for development.
- * Socket.IO for real-time multiplayer games.
+ * 
+ * NOTE: Multiplayer is now fully on-chain via Linera microchains.
+ * Socket.IO has been removed - multiplayer state is queried via GraphQL.
  */
 
 import express from 'express';
@@ -14,7 +16,6 @@ import apiRoutes from './routes/api.js';
 import { memoryDb } from './db/memory.js';
 import { postgresDb } from './db/postgres.js';
 import { binanceService } from './services/binance.js';
-import { initializeMultiplayer } from './multiplayer/index.js';
 
 // Load environment variables
 dotenv.config();
@@ -26,9 +27,6 @@ export const db = usePostgres ? postgresDb : memoryDb;
 const app = express();
 const httpServer = createServer(app);
 const PORT = parseInt(process.env.PORT || '3001', 10);
-
-// Initialize multiplayer system
-const io = initializeMultiplayer(httpServer);
 
 // =============================================================================
 // MIDDLEWARE

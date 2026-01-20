@@ -6,3 +6,4 @@ export { ProfilePage } from './ProfilePage';
 export { PredictionsPage } from './PredictionsPage';
 export { ActivityPage } from './ActivityPage';
 export { MultiplayerPage } from './MultiplayerPage';
+export { default as MultiplayerOnChainPage } from './MultiplayerOnChainPage';
