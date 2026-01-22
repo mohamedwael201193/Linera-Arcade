@@ -11,9 +11,13 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust 1.86.0 via rustup (matches rust-toolchain.toml)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0
+# Install Rust via rustup - use nightly for full feature support
+# Linera SDK and dependencies may require nightly features
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Verify Rust installation
+RUN rustc --version && cargo --version
 
 WORKDIR /app
 
