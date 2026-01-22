@@ -54,27 +54,86 @@ mod wallet_loader;
 use anyhow::{Context, Result};
 use linera_storage::DbStorage;
 use linera_views::memory::{MemoryDatabase, MemoryStoreConfig};
+use std::io::Write;
+use std::panic;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Type alias for in-memory storage
 pub type MemoryStorage = DbStorage<MemoryDatabase, linera_storage::WallClock>;
 
+/// Install a panic hook that ensures panics are logged before the process exits.
+/// This is critical for production debugging - without this, panics can be silent.
+fn install_panic_hook() {
+    panic::set_hook(Box::new(|panic_info| {
+        // Try multiple output methods to ensure the panic is visible
+        let msg = format!(
+            "\n\
+            ════════════════════════════════════════════════════════════\n\
+            ❌ PANIC - Executor crashed unexpectedly!\n\
+            ════════════════════════════════════════════════════════════\n\
+            {}\n\
+            \n\
+            Location: {}\n\
+            \n\
+            Backtrace:\n\
+            {:?}\n\
+            ════════════════════════════════════════════════════════════\n",
+            panic_info,
+            panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown".to_string()),
+            std::backtrace::Backtrace::force_capture()
+        );
+        
+        // Write to stderr (most likely to be captured by container logs)
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+        let _ = std::io::stderr().flush();
+        
+        // Also write to stdout as backup
+        let _ = std::io::stdout().write_all(msg.as_bytes());
+        let _ = std::io::stdout().flush();
+        
+        // Try eprintln as another fallback
+        eprintln!("{}", msg);
+    }));
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // === VERY FIRST THING: Install panic hook ===
+    // This MUST be before any other code to catch early panics
+    install_panic_hook();
+    
+    // Immediately print to both stdout and stderr to verify the binary is running
+    eprintln!("========================================");
+    eprintln!("🎮 Linera Arcade Executor STARTING");
+    eprintln!("   Binary is executing...");
+    eprintln!("========================================");
+    println!("========================================");
+    println!("🎮 Linera Arcade Executor STARTING");
+    println!("   Binary is executing...");
+    println!("========================================");
+    
+    // Flush immediately to ensure output appears
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
     // Initialize TLS crypto provider first (required before any network calls)
+    eprintln!("📡 Initializing TLS crypto provider...");
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
+    eprintln!("   ✅ TLS provider initialized");
 
     // Initialize logging - use stdout for container logs
+    eprintln!("📊 Initializing tracing subscriber...");
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             EnvFilter::new("arcade_executor=info,linera_client=warn,linera_core=warn")
         }))
         .with(tracing_subscriber::fmt::layer().with_target(false))
         .init();
+    eprintln!("   ✅ Tracing initialized");
 
-    // Print startup banner immediately
+    // Print startup banner
     println!("========================================");
     println!("🎮 Linera Arcade Executor v{}", env!("CARGO_PKG_VERSION"));
     println!("========================================");

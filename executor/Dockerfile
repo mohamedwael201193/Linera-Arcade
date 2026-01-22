@@ -1,7 +1,18 @@
-# Build stage - use Debian and install Rust via rustup for exact version control
-FROM debian:bookworm-slim as builder
+# ==============================================================================
+# Linera Arcade Executor - Production Dockerfile
+# ==============================================================================
+# 
+# CRITICAL: linera-sdk 0.15.8 requires Rust nightly due to `let_chains` feature
+# in async-graphql-value dependency.
+#
+# We use the SAME debian:bookworm base for build and runtime to ensure
+# glibc compatibility - this prevents silent crashes at startup.
+# ==============================================================================
 
-# Install build dependencies
+# Build stage
+FROM debian:bookworm AS builder
+
+# Install build dependencies including Rust via rustup
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -11,9 +22,10 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust via rustup - use nightly for full feature support
-# Linera SDK and dependencies may require nightly features
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+# Install Rust nightly via rustup (required for let_chains feature)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    --default-toolchain nightly \
+    --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Verify Rust installation
@@ -25,45 +37,204 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 
 # Create dummy src to build dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release || true
+RUN mkdir src && echo "fn main() { println!(\"dependency build\"); }" > src/main.rs
 
-# Copy actual source
+# Build dependencies (may fail, that's ok - we're just caching deps)
+RUN cargo build --release 2>&1 || echo "Dependency pre-build done"
+
+# Remove dummy and copy actual source
+RUN rm -rf src
 COPY src ./src
 
-# Build the actual application
-RUN cargo build --release
+# Touch main.rs to ensure full rebuild
+RUN touch src/main.rs
 
-# Runtime stage
+# Build the actual application with verbose output
+RUN cargo build --release 2>&1
+
+# Verify build succeeded
+RUN test -f target/release/arcade-executor && \
+    echo "✅ Binary built successfully" && \
+    ls -la target/release/arcade-executor && \
+    file target/release/arcade-executor
+
+# ==============================================================================
+# Runtime stage - use same base to ensure glibc compatibility
+# ==============================================================================
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
 WORKDIR /app
 
-# Copy the built binary
+# Copy the binary from builder
 COPY --from=builder /app/target/release/arcade-executor /app/arcade-executor
 
+# Ensure binary is executable
+RUN chmod +x /app/arcade-executor
+
 # Create config directory for wallet files
-# The wallet_loader.rs will write files here from env vars at runtime
 RUN mkdir -p /root/.config/linera
 
-# Environment variables documentation (set these in Render dashboard):
-# REQUIRED:
-#   HUB_CHAIN_ID - The hub chain ID
-#   APPLICATION_ID - The arcade hub application ID
-#   BACKEND_URL - Backend API URL
-#   LINERA_WALLET_JSON - Contents of wallet.json (raw JSON)
-#   LINERA_KEYSTORE_JSON - Contents of keystore.json (raw JSON)
-# OPTIONAL:
-#   LINERA_FAUCET_URL - Faucet URL (default: Conway testnet)
-#   RESOLUTION_INTERVAL_SECS - Check interval (default: 30)
-#   RUST_LOG - Log level (default: arcade_executor=info)
+# Verify binary can at least be loaded by the dynamic linker
+RUN echo "=== Binary verification ===" && \
+    file /app/arcade-executor && \
+    ldd /app/arcade-executor && \
+    echo "✅ All shared libraries found"
 
-# Run the executor
-CMD ["/app/arcade-executor"]
+# Create comprehensive entrypoint script with full diagnostics
+COPY <<'ENTRYPOINT_EOF' /app/entrypoint.sh
+#!/bin/sh
+set -e
+
+echo "========================================================"
+echo "🎮 Linera Arcade Executor - Starting Up"
+echo "========================================================"
+echo "Timestamp: $(date -Iseconds)"
+echo "Hostname: $(hostname)"
+echo ""
+
+# Verify binary exists and is executable
+echo "📦 Binary verification:"
+if [ ! -f /app/arcade-executor ]; then
+    echo "❌ FATAL: Binary not found at /app/arcade-executor"
+    exit 1
+fi
+if [ ! -x /app/arcade-executor ]; then
+    echo "❌ FATAL: Binary is not executable"
+    exit 1
+fi
+echo "   ✅ Binary exists and is executable"
+file /app/arcade-executor
+echo ""
+
+echo "🔗 Library dependencies:"
+ldd /app/arcade-executor || echo "   (ldd failed - may be statically linked)"
+echo ""
+
+# Check critical environment variables
+echo "🔍 Required environment variables:"
+check_required() {
+    VAR_NAME=$1
+    VAR_VALUE=$(printenv "$VAR_NAME" 2>/dev/null || echo "")
+    if [ -z "$VAR_VALUE" ]; then
+        echo "   ❌ $VAR_NAME: NOT SET"
+        return 1
+    else
+        case $VAR_NAME in
+            *JSON*|*SECRET*|*KEY*)
+                echo "   ✅ $VAR_NAME: SET (${#VAR_VALUE} chars)"
+                ;;
+            *)
+                # Truncate long values
+                if [ ${#VAR_VALUE} -gt 60 ]; then
+                    echo "   ✅ $VAR_NAME: ${VAR_VALUE:0:60}..."
+                else
+                    echo "   ✅ $VAR_NAME: $VAR_VALUE"
+                fi
+                ;;
+        esac
+        return 0
+    fi
+}
+
+MISSING=0
+check_required "HUB_CHAIN_ID" || MISSING=1
+check_required "APPLICATION_ID" || MISSING=1
+check_required "BACKEND_URL" || MISSING=1
+check_required "LINERA_WALLET_JSON" || MISSING=1
+check_required "LINERA_KEYSTORE_JSON" || MISSING=1
+
+echo ""
+echo "📋 Optional configuration:"
+check_required "LINERA_FAUCET_URL" || echo "   ℹ️  LINERA_FAUCET_URL: using default (Conway testnet)"
+check_required "RESOLUTION_INTERVAL_SECS" || echo "   ℹ️  RESOLUTION_INTERVAL_SECS: using default (30)"
+check_required "RUST_LOG" || echo "   ℹ️  RUST_LOG: using default"
+
+if [ "$MISSING" = "1" ]; then
+    echo ""
+    echo "========================================================"
+    echo "❌ FATAL: Missing required environment variables!"
+    echo "========================================================"
+    echo ""
+    echo "Please set all required variables in Render dashboard:"
+    echo "  - HUB_CHAIN_ID"
+    echo "  - APPLICATION_ID"
+    echo "  - BACKEND_URL"
+    echo "  - LINERA_WALLET_JSON (raw JSON content of wallet.json)"
+    echo "  - LINERA_KEYSTORE_JSON (raw JSON content of keystore.json)"
+    exit 1
+fi
+
+# Validate JSON format for wallet/keystore
+echo ""
+echo "🔐 Validating JSON format..."
+
+# Check wallet JSON starts with {
+WALLET_FIRST_CHAR=$(printf '%s' "$LINERA_WALLET_JSON" | cut -c1)
+if [ "$WALLET_FIRST_CHAR" != "{" ]; then
+    echo "❌ FATAL: LINERA_WALLET_JSON does not appear to be valid JSON"
+    echo "   First character is '$WALLET_FIRST_CHAR' (expected '{')"
+    echo "   This often means the value is base64 encoded - it should be raw JSON"
+    exit 1
+fi
+echo "   ✅ LINERA_WALLET_JSON starts with '{'"
+
+# Check keystore JSON starts with {
+KEYSTORE_FIRST_CHAR=$(printf '%s' "$LINERA_KEYSTORE_JSON" | cut -c1)
+if [ "$KEYSTORE_FIRST_CHAR" != "{" ]; then
+    echo "❌ FATAL: LINERA_KEYSTORE_JSON does not appear to be valid JSON"
+    echo "   First character is '$KEYSTORE_FIRST_CHAR' (expected '{')"
+    exit 1
+fi
+echo "   ✅ LINERA_KEYSTORE_JSON starts with '{'"
+
+# Prepare config directory
+echo ""
+echo "📂 Preparing Linera config directory..."
+mkdir -p /root/.config/linera
+chmod 700 /root/.config/linera
+echo "   ✅ /root/.config/linera created with secure permissions"
+
+# Set default RUST_LOG if not provided
+export RUST_LOG="${RUST_LOG:-arcade_executor=info,linera_client=warn,linera_core=warn}"
+export RUST_BACKTRACE=1
+
+echo ""
+echo "📊 Runtime configuration:"
+echo "   RUST_LOG: $RUST_LOG"
+echo "   RUST_BACKTRACE: $RUST_BACKTRACE"
+
+echo ""
+echo "========================================================"
+echo "🚀 Launching arcade-executor..."
+echo "========================================================"
+echo ""
+
+# Execute the binary - use exec to replace shell process
+# All stdout/stderr will go to Render logs
+exec /app/arcade-executor
+ENTRYPOINT_EOF
+
+RUN chmod +x /app/entrypoint.sh
+
+# Environment variables documentation (set in Render dashboard):
+# REQUIRED:
+#   HUB_CHAIN_ID - Hub chain ID (e.g., 925415e59d6e1d8ebb3ab2f5791ac170a21e79653f1606332ac4a62429dfca44)
+#   APPLICATION_ID - Arcade hub app ID (e.g., 6c827a8df45212cdc97eaca2d286f4608511e632396dd6fea7783ef83d573782)
+#   BACKEND_URL - Backend API URL (https://linera-arcade-backend.onrender.com)
+#   LINERA_WALLET_JSON - FULL contents of wallet.json as RAW JSON (not base64!)
+#   LINERA_KEYSTORE_JSON - FULL contents of keystore.json as RAW JSON (not base64!)
+# OPTIONAL:
+#   LINERA_FAUCET_URL - Faucet URL (default: https://faucet.testnet-conway.linera.net)
+#   RESOLUTION_INTERVAL_SECS - Resolution check interval (default: 30)
+#   RUST_LOG - Log level filter (default: arcade_executor=info,linera_client=warn,linera_core=warn)
+
+ENTRYPOINT ["/bin/sh", "/app/entrypoint.sh"]
