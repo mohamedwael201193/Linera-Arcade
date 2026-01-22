@@ -38,8 +38,21 @@ WORKDIR /app
 # Copy the built binary
 COPY --from=builder /app/target/release/arcade-executor /app/arcade-executor
 
-# Create config directory
+# Create config directory for wallet files
+# The wallet_loader.rs will write files here from env vars at runtime
 RUN mkdir -p /root/.config/linera
+
+# Environment variables documentation (set these in Render dashboard):
+# REQUIRED:
+#   HUB_CHAIN_ID - The hub chain ID
+#   APPLICATION_ID - The arcade hub application ID
+#   BACKEND_URL - Backend API URL
+#   LINERA_WALLET_JSON - Contents of wallet.json (raw JSON)
+#   LINERA_KEYSTORE_JSON - Contents of keystore.json (raw JSON)
+# OPTIONAL:
+#   LINERA_FAUCET_URL - Faucet URL (default: Conway testnet)
+#   RESOLUTION_INTERVAL_SECS - Check interval (default: 30)
+#   RUST_LOG - Log level (default: arcade_executor=info)
 
 # Run the executor
 CMD ["/app/arcade-executor"]

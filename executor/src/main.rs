@@ -49,6 +49,7 @@ mod executor;
 mod init;
 mod price_oracle;
 mod types;
+mod wallet_loader;
 
 use anyhow::{Context, Result};
 use linera_storage::DbStorage;
@@ -86,19 +87,26 @@ async fn main() -> Result<()> {
     tracing::info!("   Faucet URL: {}", config.faucet_url);
     tracing::info!("   Resolution interval: {}s", config.resolution_interval_secs);
 
-    // Load the signer from keystore
-    let keystore_path = init::get_keystore_path()?;
-    tracing::info!("🔑 Loading signer from {:?}", keystore_path);
-    let signer = init::load_signer(&keystore_path)?;
+    // === WALLET LOADING (PRODUCTION-SAFE) ===
+    // This handles both:
+    // - Production (Render): Load wallet from LINERA_WALLET_JSON / LINERA_KEYSTORE_JSON env vars
+    // - Development (Local): Use existing wallet files on disk
+    tracing::info!("🔐 Loading wallet credentials...");
+    let wallet_result = wallet_loader::load_wallet()
+        .context("Failed to load wallet credentials")?;
+    tracing::info!("   ✅ Wallet loaded from {}", wallet_result.source);
+
+    // Load the signer from keystore (now using wallet_result paths)
+    tracing::info!("🔑 Loading signer from {:?}", wallet_result.keystore_path);
+    let signer = init::load_signer(&wallet_result.keystore_path)?;
 
     // Fetch genesis config from faucet
     tracing::info!("📡 Fetching genesis config from faucet...");
     let genesis_config = init::fetch_genesis_config(&config.faucet_url).await?;
 
     // Load wallet from file (contains chain ownership info)
-    let wallet_path = init::get_wallet_path()?;
-    tracing::info!("📂 Loading wallet from {:?}", wallet_path);
-    let wallet = init::load_wallet_from_file(&wallet_path)?;
+    tracing::info!("📂 Loading wallet from {:?}", wallet_result.wallet_path);
+    let wallet = init::load_wallet_from_file(&wallet_result.wallet_path)?;
 
     // Create in-memory storage (same pattern as web/@linera/client)
     tracing::info!("📦 Creating in-memory storage backend...");
