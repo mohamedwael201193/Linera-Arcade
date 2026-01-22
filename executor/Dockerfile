@@ -1,12 +1,19 @@
-# Build stage
-FROM rust:1.86-bookworm as builder
+# Build stage - use Debian and install Rust via rustup for exact version control
+FROM debian:bookworm-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust 1.86.0 via rustup (matches rust-toolchain.toml)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app
 
