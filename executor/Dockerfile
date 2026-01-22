@@ -2,8 +2,8 @@
 # Linera Arcade Executor - Production Dockerfile
 # ==============================================================================
 # 
-# CRITICAL: linera-sdk 0.15.8 requires Rust nightly due to `let_chains` feature
-# in async-graphql-value dependency.
+# PINNED: Rust 1.86.0 and Linera SDK 0.15.8
+# The Cargo.lock file ensures exact dependency versions.
 #
 # We use the SAME debian:bookworm base for build and runtime to ensure
 # glibc compatibility - this prevents silent crashes at startup.
@@ -22,9 +22,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust nightly via rustup (required for let_chains feature)
+# Install Rust 1.86.0 via rustup (pinned version)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-    --default-toolchain nightly \
+    --default-toolchain 1.86.0 \
     --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -33,8 +33,8 @@ RUN rustc --version && cargo --version
 
 WORKDIR /app
 
-# Copy Cargo files first for dependency caching
-COPY Cargo.toml Cargo.lock* ./
+# Copy Cargo files first - Cargo.lock ensures pinned versions
+COPY Cargo.toml Cargo.lock ./
 
 # Create dummy src to build dependencies
 RUN mkdir src && echo "fn main() { println!(\"dependency build\"); }" > src/main.rs

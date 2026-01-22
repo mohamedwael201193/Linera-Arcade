@@ -5,6 +5,10 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Linera Arcade Hub - On-Chain Resolution Executor"
 
+# This makes the executor a standalone crate, not part of the parent workspace.
+# Required for Docker builds to have an isolated Cargo.lock.
+[workspace]
+
 # This is a backend executor that resolves crypto prediction rounds on-chain.
 # It uses the linera-client library directly (same as the Faucet does).
 #
@@ -15,19 +19,19 @@ description = "Linera Arcade Hub - On-Chain Resolution Executor"
 # 4. Smart contract computes winners and pays coins
 
 [dependencies]
-# Linera client libraries - must match versions used by arcade-hub contract (0.15.8)
-linera-base = "0.15.8"
-linera-chain = "0.15.8"
-linera-client = "0.15.8"
-linera-core = "0.15.8"
-linera-execution = { version = "0.15.8", features = ["wasmer"] }
-linera-rpc = "0.15.8"
-linera-storage = "0.15.8"
-linera-version = "0.15.8"
-linera-views = "0.15.8"
+# Linera client libraries - PINNED to exact 0.15.8 to prevent semver upgrades
+linera-base = "=0.15.8"
+linera-chain = "=0.15.8"
+linera-client = "=0.15.8"
+linera-core = "=0.15.8"
+linera-execution = { version = "=0.15.8", features = ["wasmer"] }
+linera-rpc = "=0.15.8"
+linera-storage = "=0.15.8"
+linera-version = "=0.15.8"
+linera-views = "=0.15.8"
 
 # For persistent wallet/keystore storage
-linera-persistent = "0.15.8"
+linera-persistent = "=0.15.8"
 
 # Async runtime
 tokio = { version = "1", features = ["full", "rt-multi-thread", "macros", "time", "signal"] }
