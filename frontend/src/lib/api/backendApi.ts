@@ -353,6 +353,17 @@ export const backendApi = {
   },
 
   /**
+   * Link a backend round to an on-chain round ID
+   * Called after frontend creates a round on-chain
+   */
+  async linkOnchainRound(dbRoundId: number, onchainRoundId: number): Promise<{ success: boolean }> {
+    return post('/predictions/crypto/rounds/link-onchain', {
+      db_round_id: dbRoundId,
+      onchain_round_id: onchainRoundId,
+    });
+  },
+
+  /**
    * Place a crypto prediction
    */
   async placeCryptoPrediction(

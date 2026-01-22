@@ -16,6 +16,9 @@ import apiRoutes from './routes/api.js';
 import { memoryDb } from './db/memory.js';
 import { postgresDb } from './db/postgres.js';
 import { binanceService } from './services/binance.js';
+import { startChainIndexer, getIndexerStatus } from './services/chainIndexer.js';
+// NOTE: On-chain resolution is handled by the separate Rust executor
+// See: /home/devmo/linera/executor/ for the Linera blockchain integration
 
 // Load environment variables
 dotenv.config();
@@ -203,9 +206,70 @@ httpServer.listen(PORT, async () => {
   await db.seed();
   
   // =============================================================================
-  // AUTO-RESOLUTION BACKGROUND TASK
+  // ROUND ROTATION BACKGROUND TASK
   // =============================================================================
+  // Creates new rounds when old ones expire (resolution is handled by Rust executor)
+  // This ensures there are always active rounds for users to bet on
+  
+  setInterval(async () => {
+    try {
+      // First, cancel any expired rounds that have no on-chain link (no bets placed)
+      // These rounds can't be resolved by the executor because they don't exist on-chain
+      const cancelled = await db.cancelUnlinkedExpiredRounds();
+      if (cancelled > 0) {
+        console.log(`🚫 Cancelled ${cancelled} unlinked expired round(s)`);
+      }
+      
+      const activeRounds = await db.getActiveCryptoRounds();
+      const hasActiveBTC = activeRounds.some((r: any) => r.asset === 'BTC');
+      const hasActiveETH = activeRounds.some((r: any) => r.asset === 'ETH');
+      
+      // Create new rounds if needed
+      if (!hasActiveBTC || !hasActiveETH) {
+        const { binanceService } = await import('./services/binance.js');
+        
+        if (!hasActiveBTC) {
+          const btcPrice = await binanceService.getBTCPrice();
+          const price = btcPrice.price > 0 ? btcPrice.price : 9500000;
+          const round = await db.createCryptoRound({ asset: 'BTC', start_price: price, duration_secs: 300 });
+          console.log(`🔄 Created new BTC round ${round.id} at $${price/100}`);
+        }
+        
+        if (!hasActiveETH) {
+          const ethPrice = await binanceService.getETHPrice();
+          const price = ethPrice.price > 0 ? ethPrice.price : 350000;
+          const round = await db.createCryptoRound({ asset: 'ETH', start_price: price, duration_secs: 300 });
+          console.log(`🔄 Created new ETH round ${round.id} at $${price/100}`);
+        }
+      }
+    } catch (err) {
+      console.error('Error in round rotation:', err);
+    }
+  }, 10000); // Check every 10 seconds
+  
+  console.log('ℹ️ Round rotation ENABLED - creates new rounds when old ones expire');
+  console.log('ℹ️ Resolution is handled by Rust executor on-chain');
+  
+  // =============================================================================
+  // START CHAIN INDEXER SERVICE
+  // =============================================================================
+  // The Chain Indexer MIRRORS on-chain state to the backend DB
+  // It does NOT resolve rounds - only syncs chain → DB
+  // Resolution is handled by the Rust executor on-chain
+  
+  startChainIndexer();
+  
+  /*
   // Check every 10 seconds for expired rounds and resolve them
+  // 
+  // ARCHITECTURE: Backend is the ORACLE
+  // 1. Backend detects expired round
+  // 2. Backend fetches real price from Coinbase
+  // 3. Backend resolves in DB (for indexing)
+  // 4. Backend calls ON-CHAIN resolution (for payouts)
+  // 5. Smart contract determines winners and credits coins
+  //
+  // This ensures rounds resolve even if NO USER visits the website!
   
   // Fallback prices if Binance API fails
   const FALLBACK_PRICES = {
@@ -233,9 +297,17 @@ httpServer.listen(PORT, async () => {
             console.warn(`⚠️ Using fallback price for ${round.asset}: $${endPrice/100}`);
           }
           
+          // STEP 1: Resolve in database (for backend indexing)
           const resolved = await db.resolveCryptoRound(round.id, endPrice);
           if (resolved) {
-            console.log(`✅ Round ${round.id} resolved: ${round.asset} ${resolved.winning_direction} (${round.start_price/100} → ${endPrice/100})`);
+            console.log(`✅ DB Round ${round.id} resolved: ${round.asset} ${resolved.winning_direction} (${round.start_price/100} → ${endPrice/100})`);
+            
+            // NOTE: On-chain resolution (STEP 2) is handled by the Rust executor
+            // The Rust executor:
+            // 1. Monitors for expired rounds
+            // 2. Uses linera-client to call ResolveCryptoRound
+            // 3. Smart contract computes winners and pays coins
+            // See: /home/devmo/linera/executor/
             
             // Create a new round for the same asset
             let newStartPrice: number;
@@ -261,6 +333,7 @@ httpServer.listen(PORT, async () => {
       console.error('Error in auto-resolution task:', err);
     }
   }, 10000); // Check every 10 seconds
+  */  // END OF DISABLED AUTO-RESOLUTION BLOCK
   
   const dbMode = usePostgres ? 'PostgreSQL (production)' : 'In-Memory (development)';
   

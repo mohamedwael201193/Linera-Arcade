@@ -1,0 +1,69 @@
+[package]
+name = "arcade-executor"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Linera Arcade Hub - On-Chain Resolution Executor"
+
+# This is a backend executor that resolves crypto prediction rounds on-chain.
+# It uses the linera-client library directly (same as the Faucet does).
+#
+# Architecture:
+# 1. Detects expired crypto rounds (via GraphQL query to application)
+# 2. Fetches current BTC/ETH price (Coinbase API)
+# 3. Executes ResolveCryptoRound operation via ChainClient
+# 4. Smart contract computes winners and pays coins
+
+[dependencies]
+# Linera client libraries - must match versions used by arcade-hub contract (0.15.8)
+linera-base = "0.15.8"
+linera-chain = "0.15.8"
+linera-client = "0.15.8"
+linera-core = "0.15.8"
+linera-execution = { version = "0.15.8", features = ["wasmer"] }
+linera-rpc = "0.15.8"
+linera-storage = "0.15.8"
+linera-version = "0.15.8"
+linera-views = "0.15.8"
+
+# For persistent wallet/keystore storage
+linera-persistent = "0.15.8"
+
+# Async runtime
+tokio = { version = "1", features = ["full", "rt-multi-thread", "macros", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+
+# Serialization (for Operation struct - must match contract's BCS format)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bcs = "0.1"
+
+# HTTP client for price oracle and GraphQL queries
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# TLS crypto provider (required for rustls)
+rustls = { version = "0.23", features = ["ring"] }
+ring = "0.17"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config
+dotenv = "0.15"
+dirs = "5"
+
+# DateTime for timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Hex encoding - must match arcade-hub
+hex = "0.4"
+
+[[bin]]
+name = "arcade-executor"
+path = "src/main.rs"

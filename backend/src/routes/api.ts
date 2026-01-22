@@ -8,6 +8,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { getDb, isUsingPostgres } from '../db/selector.js';
 import { binanceService } from '../services/binance.js';
+import { getIndexerStatus, handleRoundResolution, type RoundResolutionNotification } from '../services/chainIndexer.js';
 
 const router = Router();
 
@@ -44,6 +45,13 @@ const CreateCryptoRoundSchema = z.object({
   asset: z.enum(['BTC', 'ETH']),
   start_price: z.number().int().min(0),
   duration_secs: z.number().int().min(60).max(3600).default(300),
+  onchain_round_id: z.number().int().min(0).optional(), // Blockchain round ID
+});
+
+// Schema for linking a DB round to an on-chain round
+const LinkOnchainRoundSchema = z.object({
+  db_round_id: z.number().int().min(0),
+  onchain_round_id: z.number().int().min(0),
 });
 
 const PlaceCryptoPredictionSchema = z.object({
@@ -112,6 +120,79 @@ function requireApiKey(req: Request, res: Response, next: NextFunction) {
 
 router.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), mode: isUsingPostgres() ? 'postgresql' : 'memory' });
+});
+
+// Chain indexer status endpoint
+router.get('/indexer/status', (_req, res) => {
+  const status = getIndexerStatus();
+  res.json({
+    receiver: {
+      running: status.running,
+      mode: status.mode,
+      totalReceived: status.totalReceived,
+      totalProcessed: status.totalProcessed,
+      lastNotificationAt: status.lastNotificationAt,
+      processedRoundsCount: status.processedRoundsCount,
+    },
+    message: 'Chain resolution receiver ready - waiting for executor notifications'
+  });
+});
+
+// =============================================================================
+// INTERNAL ENDPOINTS (Called by Executor)
+// =============================================================================
+
+// Executor fetches this to get rounds that need resolution
+// Returns only rounds that have onchain_round_id set and are expired
+router.get('/internal/pending-rounds', async (_req: Request, res: Response) => {
+  try {
+    const db = await ensureDb();
+    const pendingRounds = await db.getPendingRoundsForExecutor();
+    
+    console.log(`📋 [API] Executor requested pending rounds: ${pendingRounds.length} found`);
+    
+    res.json({
+      rounds: pendingRounds.map((r: any) => ({
+        onchain_round_id: r.onchain_round_id,
+        asset: r.asset,
+        start_price: r.start_price,
+        start_time: r.start_time.toISOString(),
+        duration_secs: r.duration_secs,
+      })),
+    });
+  } catch (error) {
+    console.error('Error getting pending rounds:', error);
+    res.status(500).json({ error: 'Failed to get pending rounds' });
+  }
+});
+
+// Executor calls this endpoint after resolving a round on-chain
+router.post('/internal/resolve-round', async (req: Request, res: Response) => {
+  try {
+    const notification: RoundResolutionNotification = req.body;
+    
+    // Validate required fields
+    if (!notification.round_id || !notification.asset || !notification.end_price) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: round_id, asset, end_price',
+      });
+    }
+    
+    const result = await handleRoundResolution(notification);
+    
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    console.error('Error processing resolution notification:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal error',
+    });
+  }
 });
 
 // =============================================================================
@@ -498,13 +579,42 @@ router.post('/predictions/crypto/rounds', requireApiKey, async (req, res) => {
   try {
     const input = CreateCryptoRoundSchema.parse(req.body);
     const round = await (await ensureDb()).createCryptoRound(input);
-    res.status(201).json({ round });
+    res.status(201).json({ 
+      round: {
+        ...round,
+        start_time: round.start_time.toISOString(),
+        created_at: round.created_at.toISOString(),
+      }
+    });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: 'Invalid input', details: error.errors });
     }
     console.error('Error creating crypto round:', error);
     res.status(500).json({ error: 'Failed to create crypto round' });
+  }
+});
+
+// Link a DB round to an on-chain round (called by frontend after blockchain creation)
+router.post('/predictions/crypto/rounds/link-onchain', requireApiKey, async (req, res) => {
+  try {
+    const input = LinkOnchainRoundSchema.parse(req.body);
+    const db = await ensureDb();
+    
+    const success = await db.setOnchainRoundId(input.db_round_id, input.onchain_round_id);
+    
+    if (success) {
+      console.log(`🔗 [API] Linked DB round ${input.db_round_id} → on-chain ${input.onchain_round_id}`);
+      res.json({ success: true, message: 'Round linked successfully' });
+    } else {
+      res.status(404).json({ success: false, error: 'DB round not found' });
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors });
+    }
+    console.error('Error linking round:', error);
+    res.status(500).json({ error: 'Failed to link round' });
   }
 });
 
@@ -524,6 +634,7 @@ router.get('/predictions/crypto/rounds', async (req, res) => {
     // Transform to frontend format with proper end_time and result fields
     const rounds = rawRounds.map((r: any) => ({
       id: r.id,
+      onchain_round_id: r.onchain_round_id, // Include for debugging
       asset: r.asset,
       start_price: r.start_price,
       end_price: r.end_price,

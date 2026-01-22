@@ -331,6 +331,17 @@ export const PLACE_CRYPTO_PREDICTION = `
 `;
 
 /**
+ * Resolve a crypto round with end price ON-CHAIN
+ * This triggers winner determination and coin payouts in the smart contract
+ * Note: Field names must match the Rust Operation enum: round_id, end_price
+ */
+export const RESOLVE_CRYPTO_ROUND = `
+  mutation ResolveCryptoRound($round_id: Int!, $end_price: Int!) {
+    resolveCryptoRound(roundId: $round_id, endPrice: $end_price)
+  }
+`;
+
+/**
  * Create a world event ON-CHAIN
  * This creates the event in the blockchain state so predictions can be placed
  * Note: Field names must match the Rust Operation enum: title, description, category, end_time

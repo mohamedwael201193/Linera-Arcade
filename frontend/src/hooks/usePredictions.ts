@@ -225,6 +225,7 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
       }
       
       const backendRoundData = backendRound ? {
+        id: backendRound.id, // CRITICAL: Backend round ID for linking to on-chain round
         asset: backendRound.asset,
         start_price: backendRound.start_price,
         duration_secs: durationSecs
@@ -253,7 +254,12 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
 
   const resolveCryptoRound = useCallback(async (roundId: number): Promise<CryptoRoundEntry | null> => {
     try {
+      // Call backend to resolve round in DB
+      // NOTE: On-chain resolution is handled by the backend executor automatically
+      // The executor runs on a 30-second interval and resolves expired rounds
+      // This ensures rounds resolve even if no user visits the website
       const result = await backendApi.resolveCryptoRound(roundId);
+      
       await Promise.all([refreshCryptoRounds(), refreshUserData(), refreshActivity()]);
       return result.round;
     } catch (err) {
@@ -444,6 +450,15 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
       }
     };
   }, [refreshPrices]);
+
+  // NOTE: Auto-resolution is handled by the BACKEND, not frontend
+  // Backend's 10-second interval checks for expired rounds and:
+  // 1. Resolves in DB
+  // 2. Calls on-chain ResolveCryptoRound mutation
+  // 3. Winners get paid automatically
+  //
+  // Frontend is PASSIVE - it only displays state from backend/blockchain
+  // This ensures rounds resolve even if no user visits the website
 
   // =============================================================================
   // RETURN

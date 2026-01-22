@@ -263,6 +263,20 @@ export function isConnected(): boolean {
 }
 
 /**
+ * Wait for prices to be available (with timeout)
+ */
+export async function waitForPrices(timeoutMs: number = 5000): Promise<boolean> {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeoutMs) {
+    if (priceCache.btc > 0 && priceCache.eth > 0) {
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+/**
  * Get time since last price update (ms)
  */
 export function getLastUpdateAge(): number {
@@ -280,6 +294,7 @@ export const coinbaseService = {
   isConnected,
   getLastUpdateAge,
   initialize,
+  waitForPrices,
   
   /**
    * Get price for a specific asset

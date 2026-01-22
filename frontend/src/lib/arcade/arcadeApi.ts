@@ -18,6 +18,7 @@ import {
   CLAIM_DAILY_BONUS,
   CREATE_CRYPTO_ROUND,
   PLACE_CRYPTO_PREDICTION,
+  // RESOLVE_CRYPTO_ROUND - Backend-only! On-chain resolution is triggered by backend
   CREATE_WORLD_EVENT,
   PLACE_EVENT_PREDICTION,
 } from './queries';
@@ -719,7 +720,7 @@ class ArcadeApiClass {
     direction: 'UP' | 'DOWN',
     coinsStaked: number,
     dynamicUsername?: string,
-    backendRound?: { asset: string; start_price: number; duration_secs?: number }
+    backendRound?: { id: number; asset: string; start_price: number; duration_secs?: number }
   ): Promise<boolean> {
     console.log(`📊 Placing crypto prediction: ${direction} with ${coinsStaked} coins`);
     
@@ -758,6 +759,7 @@ class ArcadeApiClass {
       // Step 1: Ensure round exists on-chain
       // Check for active rounds on blockchain
       let onChainRoundId: number | null = null;
+      let needsLinking = false; // Track if we need to link on-chain round to backend
       
       try {
         const activeRounds = await this.getActiveCryptoRoundsOnChain();
@@ -788,6 +790,7 @@ class ArcadeApiClass {
           if (matchingRound) {
             console.log(`✅ Found existing on-chain round for ${assetUpper}: ID ${matchingRound.id} (still accepting bets)`);
             onChainRoundId = matchingRound.id;
+            needsLinking = true; // Need to link existing on-chain round to backend round
           } else {
             // Found rounds for asset but they're all past lock time
             const expiredRound = activeRounds.find(r => 
@@ -814,6 +817,7 @@ class ArcadeApiClass {
           }
           onChainRoundId = createdId;
           console.log(`✅ Created on-chain round with ID: ${onChainRoundId}`);
+          needsLinking = true;
           
           // Wait for chain to process
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -825,6 +829,7 @@ class ArcadeApiClass {
           if (acceptingRound) {
             console.log(`⚠️ Using first available accepting round: ID ${acceptingRound.id}`);
             onChainRoundId = acceptingRound.id;
+            needsLinking = true;
           }
         }
       } catch (roundErr) {
@@ -846,12 +851,25 @@ class ArcadeApiClass {
             throw new Error('Cannot place prediction: failed to create on-chain round');
           }
           onChainRoundId = createdId;
+          needsLinking = true;
           
           // Wait for chain to process
           await new Promise(resolve => setTimeout(resolve, 1000));
         } else {
           console.error('❌ No on-chain round available and no backend round data to create one');
           throw new Error('Cannot place prediction: no round available');
+        }
+      }
+      
+      // CRITICAL: Link the on-chain round ID to the backend round
+      // This is required for the executor to know which rounds to resolve
+      if (needsLinking && backendRound && onChainRoundId !== null) {
+        try {
+          await backendApi.linkOnchainRound(backendRound.id, onChainRoundId);
+          console.log(`🔗 Linked backend round ${backendRound.id} to on-chain round ${onChainRoundId}`);
+        } catch (linkErr) {
+          console.warn('⚠️ Failed to link on-chain round to backend:', linkErr);
+          // Continue anyway - prediction can still work
         }
       }
       
@@ -891,6 +909,14 @@ class ArcadeApiClass {
       return false;
     }
   }
+
+  // NOTE: resolveCryptoRoundOnChain has been REMOVED from frontend
+  // On-chain resolution is BACKEND-ONLY to ensure:
+  // 1. Rounds resolve even if no user visits the website
+  // 2. Winners get paid automatically by backend's 10-second interval
+  // 3. Blockchain state progresses without frontend presence
+  //
+  // See backend/src/index.ts AUTO-RESOLUTION BACKGROUND TASK section
 
   // =============================================================================
   // WORLD EVENT PREDICTION METHODS

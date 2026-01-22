@@ -1,0 +1,36 @@
+[Unit]
+Description=Linera Arcade Executor - On-Chain Crypto Round Resolution
+Documentation=https://github.com/linera-io/linera-protocol
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=devmo
+Group=devmo
+WorkingDirectory=/home/devmo/linera
+ExecStart=/home/devmo/linera/target/release/arcade-executor
+
+# Environment variables
+Environment="HUB_CHAIN_ID=925415e59d6e1d8ebb3ab2f5791ac170a21e79653f1606332ac4a62429dfca44"
+Environment="APPLICATION_ID=6c827a8df45212cdc97eaca2d286f4608511e632396dd6fea7783ef83d573782"
+Environment="LINERA_FAUCET_URL=https://faucet.testnet-conway.linera.net"
+Environment="RESOLUTION_INTERVAL_SECS=30"
+Environment="RUST_LOG=arcade_executor=info,linera_core=warn"
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/devmo/.config/linera
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

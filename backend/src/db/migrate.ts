@@ -155,6 +155,17 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_events_status ON world_events(status);
       CREATE INDEX IF NOT EXISTS idx_events_category ON world_events(category);
     `
+  },
+  {
+    name: '009_add_onchain_round_id',
+    sql: `
+      -- Add onchain_round_id column to crypto_rounds table for blockchain synchronization
+      ALTER TABLE crypto_rounds 
+      ADD COLUMN IF NOT EXISTS onchain_round_id INTEGER;
+      
+      -- Index for efficient lookups by onchain_round_id
+      CREATE INDEX IF NOT EXISTS idx_crypto_rounds_onchain ON crypto_rounds(onchain_round_id);
+    `
   }
 ];
 

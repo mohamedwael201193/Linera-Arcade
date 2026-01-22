@@ -8,7 +8,7 @@ mod state;
 use arcade_hub::{
     validate_username, ArcadeError, ArcadeEvent, ArcadeEventType, ArcadeHubAbi, ArcadeResponse,
     CryptoRound, GamePlayedEvent, GameScore, GameType, InstantiationArgument, LeaderboardEntry,
-    Message, Operation, Player, Prediction, PredictionDirection, PredictionStatus, WorldEvent,
+    Message, Operation, Player, Prediction, PredictionDirection, PredictionStatus, PredictionType, WorldEvent,
     // Multiplayer types
     MultiplayerGameType, MultiplayerGameRoom, MultiplayerGameStatus, MultiplayerPlayer, MoveData,
     // Response types
@@ -712,7 +712,79 @@ impl ArcadeHubContract {
             .insert(&round_id, round.clone())
             .expect("Failed to update round");
 
-        // Sync to hub
+        // ====================================================================
+        // PROCESS PREDICTIONS AND PAY WINNERS
+        // ====================================================================
+        
+        // Collect all prediction IDs for this round (must collect first to avoid borrow issues)
+        let mut prediction_ids_for_round: Vec<u64> = Vec::new();
+        let _ = self.state.predictions.for_each_index_value(|id, pred| {
+            if pred.prediction_type == PredictionType::Crypto && pred.reference_id == round_id {
+                prediction_ids_for_round.push(id);
+            }
+            Ok(())
+        }).await;
+
+        // Process each prediction
+        for pred_id in prediction_ids_for_round {
+            if let Ok(Some(mut prediction)) = self.state.predictions.get(&pred_id).await {
+                // Skip already resolved predictions
+                if prediction.status == PredictionStatus::Resolved {
+                    continue;
+                }
+
+                // Determine if this prediction won
+                let predicted_direction = prediction.get_crypto_direction();
+                let won = predicted_direction == Some(winning_direction);
+
+                // Calculate payout for winners
+                let payout = if won {
+                    prediction.calculate_payout()
+                } else {
+                    0
+                };
+
+                // Update prediction status
+                prediction.status = PredictionStatus::Resolved;
+                prediction.payout = payout;
+
+                // Save updated prediction
+                self.state
+                    .predictions
+                    .insert(&pred_id, prediction.clone())
+                    .expect("Failed to update prediction");
+
+                // Credit coins to winning player
+                if won && payout > 0 {
+                    if let Ok(Some(mut player)) = self.state.players.get(&prediction.user).await {
+                        player.award_coins(payout);
+                        player.record_prediction(true);
+                        self.state
+                            .players
+                            .insert(&prediction.user, player)
+                            .expect("Failed to update player coins");
+                    }
+                } else {
+                    // Record loss for player stats
+                    if let Ok(Some(mut player)) = self.state.players.get(&prediction.user).await {
+                        player.record_prediction(false);
+                        self.state
+                            .players
+                            .insert(&prediction.user, player)
+                            .expect("Failed to update player");
+                    }
+                }
+
+                // Sync prediction result to hub
+                self.send_to_hub_if_needed(Message::SyncPredictionResult {
+                    prediction_id: pred_id,
+                    won,
+                    payout,
+                });
+            }
+        }
+
+        // Sync round to hub
         self.send_to_hub_if_needed(Message::SyncCryptoRound(round));
 
         ArcadeResponse::CryptoRoundResolved(CryptoRoundResolvedResponse {

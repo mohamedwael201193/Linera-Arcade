@@ -44,6 +44,7 @@ export type RoundStatus = 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
 
 export interface CryptoRound {
   id: number;
+  onchain_round_id: number | null; // The blockchain round ID (source of truth for executor)
   asset: CryptoAsset;
   start_price: number; // Price in cents
   end_price: number | null;
@@ -186,6 +187,10 @@ function loadData() {
     for (const [key, round] of data.cryptoRounds) {
       round.start_time = new Date(round.start_time);
       round.created_at = new Date(round.created_at);
+      // Ensure onchain_round_id exists (migration for old data)
+      if (round.onchain_round_id === undefined) {
+        round.onchain_round_id = null;
+      }
       cryptoRounds.set(key, round);
     }
     
@@ -529,6 +534,7 @@ export const memoryDb = {
     asset: CryptoAsset;
     start_price: number;
     duration_secs: number;
+    onchain_round_id?: number; // Optional: blockchain round ID (source of truth)
   }): Promise<CryptoRound> {
     // Check if there's already an active round for this asset
     const existingActive = Array.from(cryptoRounds.values())
@@ -541,6 +547,7 @@ export const memoryDb = {
     
     const round: CryptoRound = {
       id: nextRoundId++,
+      onchain_round_id: input.onchain_round_id ?? null, // Store blockchain round ID
       asset: input.asset,
       start_price: input.start_price,
       end_price: null,
@@ -554,6 +561,7 @@ export const memoryDb = {
     };
     
     cryptoRounds.set(round.id, round);
+    console.log(`🆕 Created crypto round: DB ID=${round.id}, onchain_id=${round.onchain_round_id}, asset=${round.asset}`);
     
     // Cleanup old resolved rounds to prevent memory bloat (keep max 50)
     const allRounds = Array.from(cryptoRounds.values())
@@ -588,14 +596,127 @@ export const memoryDb = {
   },
 
   // Get rounds that have ACTIVE status but are expired (need auto-resolution)
+  // IMPORTANT: Only returns rounds that have an onchain_round_id set!
   async getExpiredUnresolvedRounds(): Promise<CryptoRound[]> {
     const now = new Date();
     return Array.from(cryptoRounds.values())
       .filter(r => {
         if (r.status !== 'ACTIVE') return false;
+        if (r.onchain_round_id === null) return false; // Must have on-chain ID
         const endTime = new Date(r.start_time.getTime() + r.duration_secs * 1000);
         return now > endTime; // Expired but still ACTIVE status
       });
+  },
+
+  // Get rounds that are pending (executor needs to resolve them on-chain)
+  // Returns rounds with onchain_round_id that are ACTIVE and expired
+  async getPendingRoundsForExecutor(): Promise<Array<{
+    onchain_round_id: number;
+    asset: CryptoAsset;
+    start_price: number;
+    start_time: Date;
+    duration_secs: number;
+  }>> {
+    const now = new Date();
+    return Array.from(cryptoRounds.values())
+      .filter(r => {
+        if (r.status !== 'ACTIVE') return false;
+        if (r.onchain_round_id === null) return false; // Must have on-chain ID
+        const endTime = new Date(r.start_time.getTime() + r.duration_secs * 1000);
+        return now > endTime; // Expired but still ACTIVE
+      })
+      .map(r => ({
+        onchain_round_id: r.onchain_round_id!,
+        asset: r.asset,
+        start_price: r.start_price,
+        start_time: r.start_time,
+        duration_secs: r.duration_secs,
+      }));
+  },
+
+  // Update a round's onchain_round_id after blockchain creation
+  async setOnchainRoundId(dbId: number, onchainId: number): Promise<boolean> {
+    const round = cryptoRounds.get(dbId);
+    if (!round) return false;
+    round.onchain_round_id = onchainId;
+    saveData();
+    console.log(`🔗 Linked DB round ${dbId} to on-chain round ${onchainId}`);
+    return true;
+  },
+
+  // Cancel expired rounds that were never linked to on-chain (no bets placed)
+  // These rounds can't be resolved because they don't exist on-chain
+  async cancelUnlinkedExpiredRounds(): Promise<number> {
+    const now = new Date();
+    let cancelled = 0;
+    
+    for (const round of cryptoRounds.values()) {
+      if (round.status !== 'ACTIVE') continue;
+      if (round.onchain_round_id !== null) continue; // Has on-chain link, skip
+      
+      const endTime = new Date(round.start_time.getTime() + round.duration_secs * 1000);
+      if (now > endTime) {
+        // Expired and no on-chain link - cancel it
+        round.status = 'CANCELLED';
+        round.end_price = round.start_price; // No change
+        console.log(`🚫 Cancelled unlinked expired round ${round.id} (${round.asset}) - no bets placed`);
+        cancelled++;
+      }
+    }
+    
+    if (cancelled > 0) {
+      saveData();
+    }
+    return cancelled;
+  },
+
+  // Find round by onchain_round_id (for executor notifications)
+  async getCryptoRoundByOnchainId(onchainId: number): Promise<CryptoRound | null> {
+    return Array.from(cryptoRounds.values()).find(r => r.onchain_round_id === onchainId) || null;
+  },
+
+  // Resolve a round by its onchain_round_id (used by executor)
+  async resolveCryptoRoundByOnchainId(onchainId: number, end_price: number): Promise<CryptoRound | null> {
+    const round = Array.from(cryptoRounds.values()).find(r => r.onchain_round_id === onchainId);
+    if (!round || round.status !== 'ACTIVE') return null;
+    
+    round.end_price = end_price;
+    round.status = 'RESOLVED';
+    round.winning_direction = end_price > round.start_price ? 'UP' : 'DOWN';
+    
+    console.log(`✅ Resolved round: onchain_id=${onchainId}, DB_id=${round.id}, result=${round.winning_direction}`);
+    
+    // Process winning predictions (by DB round ID since predictions reference DB ID)
+    const roundPredictions = predictions.filter(
+      p => p.prediction_type === 'CRYPTO' && p.reference_id === round.id
+    );
+    
+    console.log(`📊 Processing ${roundPredictions.length} predictions for round ${round.id}`);
+    
+    for (const pred of roundPredictions) {
+      const userDirection: PredictionDirection = pred.direction_or_outcome === 1 ? 'UP' : 'DOWN';
+      const won = userDirection === round.winning_direction;
+      
+      pred.status = won ? 'WON' : 'LOST';
+      if (won) {
+        pred.payout = Math.floor((pred.amount * pred.odds_at_bet) / 10000);
+        const player = players.get(pred.wallet_address);
+        if (player) {
+          player.coins += pred.payout;
+          player.predictions_won++;
+          console.log(`   💰 ${player.username} WON ${pred.payout} coins`);
+        }
+      } else {
+        pred.payout = 0;
+        const player = players.get(pred.wallet_address);
+        if (player) {
+          console.log(`   ❌ ${player.username} lost ${pred.amount} coins`);
+        }
+      }
+    }
+    
+    saveData();
+    return round;
   },
 
   async getAllCryptoRounds(limit: number = 50): Promise<CryptoRound[]> {
@@ -996,18 +1117,29 @@ export const memoryDb = {
     } else {
       // Create crypto rounds with real prices from Binance (only for missing assets)
       try {
-        const binanceService = await import('../services/binance.js').then(m => m.binanceService);
+        const binanceModule = await import('../services/binance.js');
+        const binanceService = binanceModule.binanceService;
+        
+        // Wait for prices to be available (up to 5 seconds)
+        console.log('⏳ Waiting for price data...');
+        const hasPrices = await binanceService.waitForPrices(5000);
+        
+        if (!hasPrices) {
+          console.warn('⚠️ Prices not available after 5s, using fallback prices');
+        }
         
         if (!hasActiveBTC) {
           const btcPrice = await binanceService.getBTCPrice();
-          await this.createCryptoRound({ asset: 'BTC', start_price: btcPrice.price, duration_secs: 300 });
-          console.log(`✅ Created BTC round at $${btcPrice.price/100}`);
+          const price = btcPrice.price > 0 ? btcPrice.price : 9500000;
+          await this.createCryptoRound({ asset: 'BTC', start_price: price, duration_secs: 300 });
+          console.log(`✅ Created BTC round at $${price/100}`);
         }
         
         if (!hasActiveETH) {
           const ethPrice = await binanceService.getETHPrice();
-          await this.createCryptoRound({ asset: 'ETH', start_price: ethPrice.price, duration_secs: 300 });
-          console.log(`✅ Created ETH round at $${ethPrice.price/100}`);
+          const price = ethPrice.price > 0 ? ethPrice.price : 350000;
+          await this.createCryptoRound({ asset: 'ETH', start_price: price, duration_secs: 300 });
+          console.log(`✅ Created ETH round at $${price/100}`);
         }
       } catch (err) {
         console.error('⚠️ Failed to fetch Binance prices, creating rounds with fallback:', err);

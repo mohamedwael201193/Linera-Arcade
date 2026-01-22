@@ -55,6 +55,7 @@ export interface CryptoRound {
   total_down: number;
   winning_direction: PredictionDirection | null;
   created_at: Date;
+  onchain_round_id: number | null; // The blockchain round ID (source of truth for executor)
 }
 
 export interface WorldEvent {
@@ -374,6 +375,157 @@ export const postgresDb = {
       [limit]
     );
     return result.rows;
+  },
+
+  // Get pending rounds for executor (must have onchain_round_id and be expired)
+  // IMPORTANT: Only returns rounds that have an onchain_round_id set!
+  async getPendingRoundsForExecutor(): Promise<CryptoRound[]> {
+    // Returns rounds with onchain_round_id that are ACTIVE and expired
+    const result = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND onchain_round_id IS NOT NULL
+       AND (start_time + (duration_secs * interval '1 second')) <= NOW()
+       ORDER BY start_time ASC`
+    );
+    return result.rows;
+  },
+
+  // Set the on-chain round ID for a backend round
+  async setOnchainRoundId(dbRoundId: number, onchainRoundId: number): Promise<boolean> {
+    const result = await query(
+      `UPDATE crypto_rounds SET onchain_round_id = $2 WHERE id = $1`,
+      [dbRoundId, onchainRoundId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
+  // Cancel unlinked expired rounds (rounds without onchain_round_id that have no bets)
+  async cancelUnlinkedExpiredRounds(): Promise<number> {
+    // Find expired rounds without onchain_round_id
+    const expiredUnlinked = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND onchain_round_id IS NULL
+       AND (start_time + (duration_secs * interval '1 second')) <= NOW()`
+    );
+    
+    let cancelledCount = 0;
+    for (const round of expiredUnlinked.rows) {
+      // Check if any bets exist for this round
+      const betsResult = await query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM predictions WHERE reference_id = $1 AND prediction_type = 'CRYPTO'`,
+        [round.id]
+      );
+      const betCount = parseInt(betsResult.rows[0]?.count || '0', 10);
+      
+      if (betCount === 0) {
+        // No bets - safe to cancel
+        await query(
+          `UPDATE crypto_rounds SET status = 'CANCELLED' WHERE id = $1`,
+          [round.id]
+        );
+        console.log(`🗑️ Cancelled unlinked expired round #${round.id} (${round.asset}) - no bets`);
+        cancelledCount++;
+      } else {
+        console.warn(`⚠️ Cannot cancel round #${round.id} (${round.asset}) - has ${betCount} bets but no onchain_round_id`);
+      }
+    }
+    
+    return cancelledCount;
+  },
+
+  // Find round by onchain_round_id (for executor notifications)
+  async getCryptoRoundByOnchainId(onchainId: number): Promise<CryptoRound | null> {
+    const result = await query<CryptoRound>(
+      'SELECT * FROM crypto_rounds WHERE onchain_round_id = $1',
+      [onchainId]
+    );
+    return result.rows[0] || null;
+  },
+
+  // Resolve a round by its onchain_round_id (used by executor)
+  async resolveCryptoRoundByOnchainId(onchainId: number, end_price: number): Promise<CryptoRound | null> {
+    // Get the round first by onchain_round_id
+    const roundResult = await query<CryptoRound>(
+      'SELECT * FROM crypto_rounds WHERE onchain_round_id = $1',
+      [onchainId]
+    );
+    const round = roundResult.rows[0];
+    if (!round || round.status !== 'ACTIVE') return null;
+
+    // Determine winning direction
+    const winning_direction: PredictionDirection = end_price >= round.start_price ? 'UP' : 'DOWN';
+
+    console.log(`✅ Resolving round: onchain_id=${onchainId}, DB_id=${round.id}, end_price=${end_price}, result=${winning_direction}`);
+
+    // Update round
+    const result = await query<CryptoRound>(
+      `UPDATE crypto_rounds SET
+         end_price = $2,
+         status = 'RESOLVED',
+         winning_direction = $3
+       WHERE id = $1
+       RETURNING *`,
+      [round.id, end_price, winning_direction]
+    );
+    const resolvedRound = result.rows[0];
+
+    // Process predictions (by DB round ID since predictions reference DB ID)
+    const predictions = await query<Prediction>(
+      `SELECT * FROM predictions WHERE reference_id = $1 AND prediction_type = 'CRYPTO' AND status = 'PENDING'`,
+      [round.id]
+    );
+
+    console.log(`📊 Processing ${predictions.rows.length} predictions for DB round ${round.id}`);
+
+    for (const pred of predictions.rows) {
+      const predDirection = pred.direction_or_outcome === 1 ? 'UP' : 'DOWN';
+      const won = predDirection === winning_direction;
+      const payout = won ? Math.floor(pred.amount * 1.9) : 0;
+
+      // Update prediction
+      await query(
+        `UPDATE predictions SET status = $2, payout = $3 WHERE id = $1`,
+        [pred.id, won ? 'WON' : 'LOST', payout]
+      );
+
+      // Update player coins if won
+      if (won) {
+        await query(
+          `UPDATE players SET coins = coins + $2, predictions_won = predictions_won + 1 WHERE wallet_address = $1`,
+          [pred.wallet_address, payout]
+        );
+        console.log(`   💰 Player ${pred.wallet_address.substring(0, 8)}... WON ${payout} coins`);
+      } else {
+        console.log(`   ❌ Player ${pred.wallet_address.substring(0, 8)}... lost ${pred.amount} coins`);
+      }
+
+      // Get player for activity log
+      const player = await this.getPlayerByWallet(pred.wallet_address);
+      if (player) {
+        if (won) {
+          await this.logActivity(pred.wallet_address, player.username, 'PREDICTION_WON', {
+            asset: round.asset,
+            direction: predDirection,
+            amount: pred.amount,
+            payout,
+            roundId: round.id,
+            onchainRoundId: onchainId,
+          });
+        } else {
+          await this.logActivity(pred.wallet_address, player.username, 'PREDICTION_LOST', {
+            asset: round.asset,
+            direction: predDirection,
+            amount: pred.amount,
+            roundId: round.id,
+            onchainRoundId: onchainId,
+          });
+        }
+      }
+    }
+
+    return resolvedRound;
   },
 
   async resolveCryptoRound(id: number, end_price: number): Promise<CryptoRound | null> {

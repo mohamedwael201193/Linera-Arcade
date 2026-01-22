@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts/arcade_hub"]
+members = ["contracts/arcade_hub", "executor"]
 
 [workspace.package]
 edition = "2021"
