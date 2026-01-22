@@ -66,16 +66,35 @@ async fn main() -> Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Initialize logging
+    // Initialize logging - use stdout for container logs
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             EnvFilter::new("arcade_executor=info,linera_client=warn,linera_core=warn")
         }))
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_target(false))
         .init();
 
+    // Print startup banner immediately
+    println!("========================================");
+    println!("🎮 Linera Arcade Executor v{}", env!("CARGO_PKG_VERSION"));
+    println!("========================================");
+    
     tracing::info!("🎮 Linera Arcade Executor starting...");
     tracing::info!("   Version: {}", env!("CARGO_PKG_VERSION"));
+    
+    // Check critical environment variables first
+    tracing::info!("🔍 Checking environment variables...");
+    let has_wallet = std::env::var("LINERA_WALLET_JSON").is_ok();
+    let has_keystore = std::env::var("LINERA_KEYSTORE_JSON").is_ok();
+    let has_hub_chain = std::env::var("HUB_CHAIN_ID").is_ok();
+    let has_app_id = std::env::var("APPLICATION_ID").is_ok();
+    let has_backend = std::env::var("BACKEND_URL").is_ok();
+    
+    tracing::info!("   LINERA_WALLET_JSON: {}", if has_wallet { "✅ SET" } else { "❌ MISSING" });
+    tracing::info!("   LINERA_KEYSTORE_JSON: {}", if has_keystore { "✅ SET" } else { "❌ MISSING" });
+    tracing::info!("   HUB_CHAIN_ID: {}", if has_hub_chain { "✅ SET" } else { "❌ MISSING" });
+    tracing::info!("   APPLICATION_ID: {}", if has_app_id { "✅ SET" } else { "❌ MISSING" });
+    tracing::info!("   BACKEND_URL: {}", if has_backend { "✅ SET" } else { "❌ MISSING" });
 
     // Load configuration
     dotenv::dotenv().ok();
