@@ -322,17 +322,13 @@ class ArcadeApiClass {
       throw new Error('No auto-signer address');
     }
     
-    // Step 0: Check if player exists using STABLE identity (wallet address)
-    // CRITICAL FIX: Use this.getPlayer(wallet) which queries backend with wallet address.
-    // DO NOT query blockchain directly with auto-signer because:
-    // - Auto-signer is randomly generated each session
-    // - Player was registered under DIFFERENT auto-signer
-    // - Query with wrong auto-signer → player not found → false re-registration
-    let playerBefore: Player | null = null;
+    // Step 0: Check if player is registered using STABLE identity (wallet address via backend)
+    // This is for USERNAME resolution only - uses backend which is keyed by wallet address.
+    // IMPORTANT: Do NOT use this for XP measurement - see Step 0b below.
     try {
-      playerBefore = await this.getPlayer(wallet);
+      const backendPlayer = await this.getPlayer(wallet);
       
-      if (!playerBefore) {
+      if (!backendPlayer) {
         console.log('📝 Player not registered, auto-registering...');
         // Use Dynamic Wallet username if available, otherwise use WALLET address (stable)
         // DO NOT use auto-signer for fallback - it changes every session!
@@ -342,19 +338,31 @@ class ArcadeApiClass {
         console.log('✅ Player auto-registered!');
         // Small delay to ensure registration is processed
         await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Re-query player from backend (stable source)
-        playerBefore = await this.getPlayer(wallet);
       } else {
-        console.log(`✅ Player already registered as: ${playerBefore.username}`);
+        console.log(`✅ Player already registered as: ${backendPlayer.username}`);
       }
     } catch (regErr) {
       console.warn('⚠️ Could not verify/register player:', regErr);
       // Continue anyway - let the contract handle it
     }
     
-    const xpBefore = playerBefore?.totalXp ?? 0;
-    console.log(`📊 XP before submission: ${xpBefore}`);
+    // Step 0b: Query BLOCKCHAIN state BEFORE submission for XP diff calculation
+    // CRITICAL: Must use autoSignerAddress for BOTH before and after queries because:
+    // - The blockchain stores player state keyed by authenticated_signer() = autoSignerAddress
+    // - XP diff must be measured from the SAME data source (blockchain, same key)
+    // - Backend has different totals (historical across all sessions)
+    // This is separate from username resolution which uses wallet address.
+    let xpBefore = 0;
+    try {
+      const blockchainPlayer = await lineraAdapter.query<PlayerResponse>(
+        GET_PLAYER,
+        { wallet: autoSignerAddress }
+      );
+      xpBefore = blockchainPlayer?.player?.totalXp ?? 0;
+    } catch (err) {
+      console.warn('⚠️ Could not query blockchain XP before submission:', err);
+    }
+    console.log(`📊 XP before submission (blockchain): ${xpBefore}`);
     
     // Step 1: Submit score to blockchain
     // NOTE: Linera mutations don't return complex types, just execute
