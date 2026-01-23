@@ -52,11 +52,10 @@ RUN touch src/main.rs
 # Build the actual application with verbose output
 RUN cargo build --release 2>&1
 
-# Verify build succeeded
+# Verify build succeeded (file command not available in minimal builder)
 RUN test -f target/release/arcade-executor && \
     echo "✅ Binary built successfully" && \
-    ls -la target/release/arcade-executor && \
-    file target/release/arcade-executor
+    ls -la target/release/arcade-executor
 
 # ==============================================================================
 # Runtime stage - use same base to ensure glibc compatibility
