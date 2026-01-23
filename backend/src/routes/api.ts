@@ -149,15 +149,21 @@ router.get('/internal/pending-rounds', async (_req: Request, res: Response) => {
     const db = await ensureDb();
     const pendingRounds = await db.getPendingRoundsForExecutor();
     
-    console.log(`📋 [API] Executor requested pending rounds: ${pendingRounds.length} found`);
+    // Filter out rounds with invalid onchain_round_id (0 or null)
+    const validRounds = pendingRounds.filter((r: any) => 
+      r.onchain_round_id && r.onchain_round_id > 0
+    );
+    
+    console.log(`📋 [API] Executor requested pending rounds: ${validRounds.length} valid of ${pendingRounds.length} total`);
     
     res.json({
-      rounds: pendingRounds.map((r: any) => ({
-        onchain_round_id: r.onchain_round_id,
+      rounds: validRounds.map((r: any) => ({
+        // Ensure numbers are sent as numbers, not strings (PostgreSQL BIGINT issue)
+        onchain_round_id: Number(r.onchain_round_id),
         asset: r.asset,
-        start_price: r.start_price,
+        start_price: Number(r.start_price),
         start_time: r.start_time.toISOString(),
-        duration_secs: r.duration_secs,
+        duration_secs: Number(r.duration_secs),
       })),
     });
   } catch (error) {
