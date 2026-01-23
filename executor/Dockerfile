@@ -89,6 +89,7 @@ RUN echo "=== Binary verification ===" && \
     echo "✅ Binary copied successfully"
 
 # Create comprehensive entrypoint script with full diagnostics
+# NOTE: Using POSIX sh syntax (no bash-isms like ${#var} or ${var:0:60})
 COPY <<'ENTRYPOINT_EOF' /app/entrypoint.sh
 #!/bin/sh
 set -e
@@ -114,7 +115,7 @@ echo "   ✅ Binary exists and is executable"
 ls -la /app/arcade-executor
 echo ""
 
-# Check critical environment variables
+# Check critical environment variables (POSIX-compliant)
 echo "🔍 Required environment variables:"
 check_required() {
     VAR_NAME=$1
@@ -125,15 +126,11 @@ check_required() {
     else
         case $VAR_NAME in
             *JSON*|*SECRET*|*KEY*)
-                echo "   ✅ $VAR_NAME: SET (${#VAR_VALUE} chars)"
+                # For sensitive vars, just show it's set
+                echo "   ✅ $VAR_NAME: SET"
                 ;;
             *)
-                # Truncate long values
-                if [ ${#VAR_VALUE} -gt 60 ]; then
-                    echo "   ✅ $VAR_NAME: ${VAR_VALUE:0:60}..."
-                else
-                    echo "   ✅ $VAR_NAME: $VAR_VALUE"
-                fi
+                echo "   ✅ $VAR_NAME: $VAR_VALUE"
                 ;;
         esac
         return 0
@@ -199,7 +196,8 @@ chmod 700 /root/.config/linera
 echo "   ✅ /root/.config/linera created with secure permissions"
 
 # Set default RUST_LOG if not provided
-export RUST_LOG="${RUST_LOG:-arcade_executor=info,linera_client=warn,linera_core=warn}"
+RUST_LOG="${RUST_LOG:-arcade_executor=info,linera_client=warn,linera_core=warn}"
+export RUST_LOG
 export RUST_BACKTRACE=1
 
 echo ""
