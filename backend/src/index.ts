@@ -234,17 +234,33 @@ httpServer.listen(PORT, async () => {
         const { binanceService } = await import('./services/binance.js');
         
         if (!hasActiveBTC) {
-          const btcPrice = await binanceService.getBTCPrice();
-          const price = btcPrice.price > 0 ? btcPrice.price : 9500000;
-          const round = await db.createCryptoRound({ asset: 'BTC', start_price: price, duration_secs: 300 });
-          console.log(`🔄 Created new BTC round ${round.id} at $${price/100}`);
+          try {
+            const btcPrice = await binanceService.getBTCPrice();
+            const price = btcPrice.price > 0 ? btcPrice.price : 9500000;
+            if (price > 0) {
+              const round = await db.createCryptoRound({ asset: 'BTC', start_price: price, duration_secs: 300 });
+              console.log(`🔄 Created new BTC round ${round.id} at $${price/100}`);
+            } else {
+              console.error('⚠️ Skipping BTC round creation - invalid price');
+            }
+          } catch (err) {
+            console.error('⚠️ Failed to create BTC round:', err);
+          }
         }
         
         if (!hasActiveETH) {
-          const ethPrice = await binanceService.getETHPrice();
-          const price = ethPrice.price > 0 ? ethPrice.price : 350000;
-          const round = await db.createCryptoRound({ asset: 'ETH', start_price: price, duration_secs: 300 });
-          console.log(`🔄 Created new ETH round ${round.id} at $${price/100}`);
+          try {
+            const ethPrice = await binanceService.getETHPrice();
+            const price = ethPrice.price > 0 ? ethPrice.price : 350000;
+            if (price > 0) {
+              const round = await db.createCryptoRound({ asset: 'ETH', start_price: price, duration_secs: 300 });
+              console.log(`🔄 Created new ETH round ${round.id} at $${price/100}`);
+            } else {
+              console.error('⚠️ Skipping ETH round creation - invalid price');
+            }
+          } catch (err) {
+            console.error('⚠️ Failed to create ETH round:', err);
+          }
         }
       }
     } catch (err) {

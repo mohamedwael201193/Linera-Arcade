@@ -330,6 +330,12 @@ export const postgresDb = {
     start_price: number;
     duration_secs: number;
   }): Promise<CryptoRound> {
+    // Validate start_price - don't create rounds with invalid prices
+    if (!input.start_price || input.start_price <= 0) {
+      console.error(`❌ Cannot create round with invalid start_price: ${input.start_price}`);
+      throw new Error(`Invalid start_price: ${input.start_price}`);
+    }
+    
     // First insert the round
     const result = await query<CryptoRound>(
       `INSERT INTO crypto_rounds (asset, start_price, duration_secs)
@@ -414,16 +420,44 @@ export const postgresDb = {
   },
 
   // Cancel unlinked expired rounds (rounds without onchain_round_id that have no bets)
+  // Also cancels invalid rounds with start_price = 0 or onchain_round_id = 0
   async cancelUnlinkedExpiredRounds(): Promise<number> {
-    // Find expired rounds without onchain_round_id
-    const expiredUnlinked = await query<CryptoRound>(
+    // First: Cancel any active rounds with invalid data (start_price = 0 or onchain_round_id = 0)
+    const invalidRounds = await query<CryptoRound>(
       `SELECT * FROM crypto_rounds 
        WHERE status = 'ACTIVE' 
-       AND onchain_round_id IS NULL
-       AND (start_time + (duration_secs * interval '1 second')) <= NOW()`
+       AND (start_price = 0 OR start_price IS NULL OR onchain_round_id = 0 OR onchain_round_id IS NULL)`
     );
     
     let cancelledCount = 0;
+    for (const round of invalidRounds.rows) {
+      // Refund any bets on invalid rounds
+      const betsResult = await query<{ wallet_address: string; amount: number }>(
+        `SELECT wallet_address, amount FROM predictions WHERE reference_id = $1 AND prediction_type = 'CRYPTO' AND status = 'PENDING'`,
+        [round.id]
+      );
+      
+      for (const bet of betsResult.rows) {
+        // Refund the bet
+        await query(`UPDATE players SET coins = coins + $2 WHERE wallet_address = $1`, [bet.wallet_address, bet.amount]);
+        await query(`UPDATE predictions SET status = 'CANCELLED', payout = $2 WHERE reference_id = $3 AND wallet_address = $1 AND prediction_type = 'CRYPTO' AND status = 'PENDING'`,
+          [bet.wallet_address, bet.amount, round.id]);
+        console.log(`💰 Refunded ${bet.amount} coins to ${bet.wallet_address} for invalid round #${round.id}`);
+      }
+      
+      await query(`UPDATE crypto_rounds SET status = 'CANCELLED' WHERE id = $1`, [round.id]);
+      console.log(`🗑️ Cancelled INVALID round #${round.id} (${round.asset}) - start_price=${round.start_price}, onchain_id=${round.onchain_round_id}`);
+      cancelledCount++;
+    }
+    
+    // Second: Find expired rounds without proper onchain_round_id that have no bets
+    const expiredUnlinked = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND (onchain_round_id IS NULL OR onchain_round_id = 0)
+       AND (start_time + (duration_secs * interval '1 second')) <= NOW()`
+    );
+    
     for (const round of expiredUnlinked.rows) {
       // Check if any bets exist for this round
       const betsResult = await query<{ count: string }>(
