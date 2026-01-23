@@ -191,6 +191,9 @@ httpServer.listen(PORT, async () => {
           total_no BIGINT DEFAULT 0,
           created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         )`,
+        // Migration 009: Add onchain_round_id for executor synchronization
+        `ALTER TABLE crypto_rounds ADD COLUMN IF NOT EXISTS onchain_round_id INTEGER`,
+        `CREATE INDEX IF NOT EXISTS idx_crypto_rounds_onchain ON crypto_rounds(onchain_round_id)`,
       ];
       
       for (const sql of migrations) {
