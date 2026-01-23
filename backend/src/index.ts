@@ -194,6 +194,8 @@ httpServer.listen(PORT, async () => {
         // Migration 009: Add onchain_round_id for executor synchronization
         `ALTER TABLE crypto_rounds ADD COLUMN IF NOT EXISTS onchain_round_id INTEGER`,
         `CREATE INDEX IF NOT EXISTS idx_crypto_rounds_onchain ON crypto_rounds(onchain_round_id)`,
+        // Migration 010: Set onchain_round_id = id for existing rounds (executor sync fix)
+        `UPDATE crypto_rounds SET onchain_round_id = id WHERE onchain_round_id IS NULL`,
       ];
       
       for (const sql of migrations) {

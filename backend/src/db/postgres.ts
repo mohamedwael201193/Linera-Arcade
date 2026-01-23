@@ -330,13 +330,26 @@ export const postgresDb = {
     start_price: number;
     duration_secs: number;
   }): Promise<CryptoRound> {
+    // First insert the round
     const result = await query<CryptoRound>(
       `INSERT INTO crypto_rounds (asset, start_price, duration_secs)
        VALUES ($1, $2, $3)
        RETURNING *`,
       [input.asset, input.start_price, input.duration_secs]
     );
-    return result.rows[0];
+    const round = result.rows[0];
+    
+    // Set onchain_round_id to match DB id for executor synchronization
+    // This makes the DB round ID the canonical on-chain round ID
+    await query(
+      `UPDATE crypto_rounds SET onchain_round_id = $1 WHERE id = $1`,
+      [round.id]
+    );
+    
+    round.onchain_round_id = round.id;
+    console.log(`🆕 Created crypto round: DB ID=${round.id}, onchain_id=${round.onchain_round_id}, asset=${round.asset}`);
+    
+    return round;
   },
 
   async getCryptoRound(id: number): Promise<CryptoRound | null> {

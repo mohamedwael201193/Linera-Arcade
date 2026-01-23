@@ -545,9 +545,10 @@ export const memoryDb = {
       return existingActive;
     }
     
+    const roundId = nextRoundId++;
     const round: CryptoRound = {
-      id: nextRoundId++,
-      onchain_round_id: input.onchain_round_id ?? null, // Store blockchain round ID
+      id: roundId,
+      onchain_round_id: input.onchain_round_id ?? roundId, // Default to DB ID for executor sync
       asset: input.asset,
       start_price: input.start_price,
       end_price: null,
