@@ -83,13 +83,6 @@ interface SubmitScoreResponse {
  * Uses backend API for reads and blockchain for writes
  */
 class ArcadeApiClass {
-  /**
-   * Normalize wallet address to lowercase
-   */
-  private normalizeWallet(wallet: string): string {
-    return wallet.toLowerCase();
-  }
-
   // ===========================================================================
   // PLAYER OPERATIONS
   // ===========================================================================
@@ -97,16 +90,27 @@ class ArcadeApiClass {
   /**
    * Get a player by wallet address
    * First tries backend, falls back to blockchain for own chain data.
-   * Auto-syncs to backend if player exists on blockchain but not on backend.
-   * IMPORTANT: For blockchain queries, uses autoSignerAddress (what contract sees)
+   * 
+   * CRITICAL FIX: Backend is the AUTHORITATIVE source of truth for player identity.
+   * 
+   * WHY NOT BLOCKCHAIN?
+   * - Contract stores players keyed by AccountOwner (authenticated_signer())
+   * - authenticated_signer() returns AUTO-SIGNER address (random per session)
+   * - Auto-signer changes on every page refresh (new random key generated)
+   * - Query with wrong auto-signer → player not found → false auto-registration
+   * - This caused the intermittent "Player_0x..." bug
+   * 
+   * WHY BACKEND?
+   * - Backend stores players keyed by MetaMask wallet address (STABLE)
+   * - Same wallet address across ALL sessions, ALL devices
+   * - Reliable, deterministic username resolution
    * 
    * @param wallet - Wallet address (0x...)
    * @returns Player or null if not registered
    */
   async getPlayer(wallet: string): Promise<Player | null> {
-    const normalizedWallet = this.normalizeWallet(wallet);
-    
-    // Try backend first (has global data)
+    // Backend is SINGLE SOURCE OF TRUTH for player identity.
+    // DO NOT fall back to blockchain - auto-signer changes per session!
     try {
       const backendPlayer = await backendApi.getPlayer(wallet);
       if (backendPlayer) {
@@ -119,40 +123,17 @@ class ArcadeApiClass {
           registeredAt: 0,
         };
       }
-    } catch {
-      // Backend player not found, try blockchain
+    } catch (err) {
+      console.warn('⚠️ Backend player lookup failed:', err);
     }
     
-    // Fall back to blockchain query (own chain)
-    // IMPORTANT: Use autoSignerAddress because that's what the contract sees
-    try {
-      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
-      const queryAddress = autoSignerAddress || normalizedWallet;
-      
-      const result = await lineraAdapter.query<PlayerResponse>(
-        GET_PLAYER,
-        { wallet: queryAddress }
-      );
-      
-      if (result.player) {
-        // Auto-sync to backend if player exists on blockchain but not on backend
-        console.log('📡 Player found on blockchain but not backend, auto-syncing...');
-        try {
-          const chainId = lineraAdapter.getChainId();
-          await backendApi.registerPlayer(wallet, result.player.username, chainId || undefined);
-          console.log('✅ Player auto-synced to backend!');
-        } catch (syncErr) {
-          console.warn('⚠️ Failed to auto-sync player to backend:', syncErr);
-        }
-        
-        return result.player;
-      }
-      
-      return null;
-    } catch (error) {
-      console.error('Failed to get player from blockchain:', error);
-      return null;
-    }
+    // If backend doesn't have the player, they need to register.
+    // DO NOT query blockchain with auto-signer because:
+    // 1. Auto-signer is randomly generated each session
+    // 2. Player was registered under PREVIOUS session's auto-signer
+    // 3. Current auto-signer is DIFFERENT → query returns null
+    // 4. This would trigger false auto-registration as "Player_0x..."
+    return null;
   }
 
   /**
@@ -196,14 +177,22 @@ class ArcadeApiClass {
     
     console.log('✅ Player registered on blockchain');
     
-    // Step 2: Sync to backend (async, don't wait)
+    // Step 2: Sync to backend SYNCHRONOUSLY (CRITICAL FIX)
+    // MUST await to ensure player is saved before any subsequent queries.
+    // Previous bug: async fire-and-forget caused race condition where
+    // page refresh before sync complete → player not found → re-register
     const wallet = lineraAdapter.getAddress();
     const chainId = lineraAdapter.getChainId();
     
     if (wallet) {
-      backendApi.registerPlayer(wallet, username, chainId || undefined)
-        .then(() => console.log('✅ Player synced to backend'))
-        .catch(err => console.warn('⚠️ Failed to sync to backend:', err));
+      try {
+        await backendApi.registerPlayer(wallet, username, chainId || undefined);
+        console.log('✅ Player synced to backend');
+      } catch (err) {
+        console.warn('⚠️ Failed to sync to backend:', err);
+        // Continue anyway - blockchain registration succeeded
+        // Backend will sync on next successful call
+      }
     }
     
     return true;
@@ -333,31 +322,29 @@ class ArcadeApiClass {
       throw new Error('No auto-signer address');
     }
     
-    // Step 0: Get player state BEFORE submission to calculate XP diff
+    // Step 0: Check if player exists using STABLE identity (wallet address)
+    // CRITICAL FIX: Use this.getPlayer(wallet) which queries backend with wallet address.
+    // DO NOT query blockchain directly with auto-signer because:
+    // - Auto-signer is randomly generated each session
+    // - Player was registered under DIFFERENT auto-signer
+    // - Query with wrong auto-signer → player not found → false re-registration
     let playerBefore: Player | null = null;
     try {
-      const playerCheck = await lineraAdapter.query<PlayerResponse>(
-        GET_PLAYER,
-        { wallet: autoSignerAddress }
-      );
-      playerBefore = playerCheck?.player || null;
+      playerBefore = await this.getPlayer(wallet);
       
       if (!playerBefore) {
         console.log('📝 Player not registered, auto-registering...');
-        // Use Dynamic Wallet username if available, otherwise generate default
-        const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
-        console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
+        // Use Dynamic Wallet username if available, otherwise use WALLET address (stable)
+        // DO NOT use auto-signer for fallback - it changes every session!
+        const username = dynamicUsername || `Player_${wallet.slice(2, 10)}`;
+        console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'wallet address'})`);
         await this.registerPlayer(username);
         console.log('✅ Player auto-registered!');
         // Small delay to ensure registration is processed
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Re-query player to get initial state
-        const recheck = await lineraAdapter.query<PlayerResponse>(
-          GET_PLAYER,
-          { wallet: autoSignerAddress }
-        );
-        playerBefore = recheck?.player || null;
+        // Re-query player from backend (stable source)
+        playerBefore = await this.getPlayer(wallet);
       } else {
         console.log(`✅ Player already registered as: ${playerBefore.username}`);
       }
@@ -730,27 +717,26 @@ class ArcadeApiClass {
     }
     
     try {
-      // Step 0: Check if player is registered, if not auto-register
-      // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
+      // Step 0: Check if player is registered using STABLE identity (wallet address)
+      // CRITICAL FIX: Use this.getPlayer(wallet) which queries backend.
+      // DO NOT query blockchain with auto-signer because:
+      // - Auto-signer changes every session (random key)
+      // - Player was registered under DIFFERENT auto-signer
+      // - Wrong auto-signer query → player not found → false re-registration as "Player_0x..."
       try {
-        const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
-        if (autoSignerAddress) {
-          const playerCheck = await lineraAdapter.query<PlayerResponse>(
-            GET_PLAYER,
-            { wallet: autoSignerAddress }
-          );
+        const existingPlayer = await this.getPlayer(wallet);
           
-          if (!playerCheck?.player) {
-            console.log('📝 Player not registered, auto-registering...');
-            // Use Dynamic Wallet username if available, otherwise generate default
-            const username = dynamicUsername || `Player_${autoSignerAddress.slice(0, 8)}`;
-            console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
-            await this.registerPlayer(username);
-            console.log('✅ Player auto-registered!');
-            await new Promise(resolve => setTimeout(resolve, 500));
-          } else {
-            console.log(`✅ Player already registered as: ${playerCheck.player.username}`);
-          }
+        if (!existingPlayer) {
+          console.log('📝 Player not registered, auto-registering...');
+          // Use Dynamic Wallet username if available, otherwise use WALLET address (stable)
+          // DO NOT use auto-signer for fallback - it changes every session!
+          const username = dynamicUsername || `Player_${wallet.slice(2, 10)}`;
+          console.log(`📝 Using username: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'wallet address'})`);
+          await this.registerPlayer(username);
+          console.log('✅ Player auto-registered!');
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } else {
+          console.log(`✅ Player already registered as: ${existingPlayer.username}`);
         }
       } catch (regErr) {
         console.warn('⚠️ Could not verify/register player:', regErr);
@@ -1050,35 +1036,30 @@ class ArcadeApiClass {
     console.log(`📊 Placing event prediction: ${outcome} with ${coinsStaked} coins`);
     
     try {
-      // Ensure player is registered
+      // Ensure player is registered using STABLE identity (wallet address)
       const wallet = lineraAdapter.getAddress();
       if (!wallet) {
         throw new Error('Wallet not connected');
       }
 
-      // IMPORTANT: Use autoSignerAddress because that's what the contract sees as authenticated_signer()
-      const autoSignerAddress = lineraAdapter.getAutoSignerAddress();
-      const queryAddress = autoSignerAddress || wallet;
+      // CRITICAL FIX: Use this.getPlayer(wallet) which queries backend.
+      // DO NOT query blockchain with auto-signer because:
+      // - Auto-signer changes every session (random key)
+      // - Player was registered under DIFFERENT auto-signer
+      // - Wrong auto-signer query → player not found → false re-registration as "Player_0x..."
+      const existingPlayer = await this.getPlayer(wallet);
 
-      // Check if player exists, register if not
-      const playerResult = await lineraAdapter.query<PlayerResponse>(
-        GET_PLAYER,
-        { wallet: queryAddress }
-      );
-
-      if (!playerResult.player) {
-        // Auto-register with Dynamic username or fallback to sanitized wallet
-        const username = dynamicUsername || `Player_${queryAddress.slice(0, 8)}`;
-        console.log(`🔐 Auto-registering player as: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'auto-generated'})`);
-        await lineraAdapter.mutate<RegisterPlayerResponse>(
-          REGISTER_PLAYER,
-          { username }
-        );
+      if (!existingPlayer) {
+        // Auto-register with Dynamic username or WALLET-based fallback (stable)
+        // DO NOT use auto-signer for fallback - it changes every session!
+        const username = dynamicUsername || `Player_${wallet.slice(2, 10)}`;
+        console.log(`🔐 Auto-registering player as: ${username} (from ${dynamicUsername ? 'Dynamic Wallet' : 'wallet address'})`);
+        await this.registerPlayer(username);
         console.log('✅ Player auto-registered!');
         // Small delay to ensure registration is processed
         await new Promise(resolve => setTimeout(resolve, 500));
       } else {
-        console.log('✅ Player already registered as:', playerResult.player.username);
+        console.log('✅ Player already registered as:', existingPlayer.username);
       }
 
       // Step 1: Get active world events on chain to check if this event exists
