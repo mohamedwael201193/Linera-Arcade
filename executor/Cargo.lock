@@ -166,6 +166,10 @@ name = "arcade-executor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-graphql",
+ "async-graphql-derive",
+ "async-graphql-parser",
+ "async-graphql-value",
  "bcs",
  "chrono",
  "dirs",
@@ -258,9 +262,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql-parser"
-version = "7.2.1"
+version = "7.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e64ef70f77a1c689111e52076da1cd18f91834bcb847de0a9171f83624b07fbf"
+checksum = "60b7607e59424a35dadbc085b0d513aa54ec28160ee640cf79ec3b634eba66d3"
 dependencies = [
  "async-graphql-value",
  "pest",
@@ -270,9 +274,9 @@ dependencies = [
 
 [[package]]
 name = "async-graphql-value"
-version = "7.2.1"
+version = "7.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e3ef112905abea9dea592fc868a6873b10ebd3f983e83308f995d6284e9ba41"
+checksum = "34ecdaff7c9cffa3614a9f9999bf9ee4c3078fe3ce4d6a6e161736b56febf2de"
 dependencies = [
  "bytes",
  "indexmap 2.13.0",

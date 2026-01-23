@@ -33,6 +33,13 @@ linera-views = "=0.15.8"
 # For persistent wallet/keystore storage
 linera-persistent = "=0.15.8"
 
+# CRITICAL: Pin async-graphql crates to 7.0.17 - version 7.2.x requires nightly Rust
+# These are transitive deps of linera-sdk but must be pinned to avoid semver upgrades
+async-graphql = "=7.0.17"
+async-graphql-derive = "=7.0.17"
+async-graphql-parser = "=7.0.17"
+async-graphql-value = "=7.0.17"
+
 # Async runtime
 tokio = { version = "1", features = ["full", "rt-multi-thread", "macros", "time", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
