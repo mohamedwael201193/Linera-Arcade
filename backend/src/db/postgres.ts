@@ -88,7 +88,7 @@ export interface ActivityLog {
   id: number;
   wallet_address: string;
   username: string;
-  action: 'GAME_COMPLETED' | 'PREDICTION_PLACED' | 'PREDICTION_WON' | 'PREDICTION_LOST' | 'DAILY_BONUS' | 'REGISTERED';
+  action: 'GAME_COMPLETED' | 'PREDICTION_PLACED' | 'PREDICTION_WON' | 'PREDICTION_LOST' | 'DAILY_BONUS' | 'REGISTERED' | 'TOURNAMENT_COMPLETED' | 'MULTIPLAYER_WIN' | 'MULTIPLAYER_LOSS';
   details: Record<string, any>;
   created_at: Date;
 }
