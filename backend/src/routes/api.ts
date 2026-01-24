@@ -1301,11 +1301,16 @@ router.post('/tournament/submit', async (req: Request, res: Response) => {
     // Coins: base 20 + score bonus (1 coin per 20 points, max 30 bonus)
     const calculatedCoins = coins_earned ?? Math.min(20 + Math.floor(score / 20), 50);
 
-    // Only award XP/coins if this is a new high score (entry.score === score)
+    // Only award XP/coins if this is a new high score
+    // IMPORTANT: entry.score from PostgreSQL may be a STRING due to bigint conversion
+    // Use Number() to ensure proper comparison
+    const entryScore = Number(entry.score);
     let newTotalXp = 0;
     let rewardsAwarded = false;
     
-    if (entry.score === score) {
+    console.log(`🔍 Comparing scores: entry.score=${entry.score} (type: ${typeof entry.score}), input score=${score} (type: ${typeof score}), after conversion: ${entryScore} === ${score} = ${entryScore === score}`);
+    
+    if (entryScore === score) {
       // This is a new/better score - award rewards
       try {
         // Get or create player
@@ -1368,13 +1373,28 @@ router.post('/tournament/submit', async (req: Request, res: Response) => {
         console.error('Failed to award tournament rewards (non-critical):', err);
       }
     } else {
-      console.log(`ℹ️ Entry already exists with higher score (${entry.score} > ${score}), not awarding rewards`);
+      console.log(`ℹ️ Entry already exists with higher score (${entryScore} > ${score}), not awarding rewards`);
+    }
+
+    // Calculate the player's actual rank in the tournament
+    // Get the full leaderboard and find their position
+    let playerRank = 0;
+    try {
+      const leaderboard = await database.getTournamentLeaderboard(tournament_id, 1000);
+      const playerIndex = leaderboard.findIndex(
+        (e: { player_address: string }) => e.player_address.toLowerCase() === player_address.toLowerCase()
+      );
+      playerRank = playerIndex >= 0 ? playerIndex + 1 : 0;
+      console.log(`📊 Player rank in tournament: ${playerRank} (out of ${leaderboard.length})`);
+    } catch (rankErr) {
+      console.error('Failed to calculate rank:', rankErr);
     }
 
     res.status(201).json({
       success: true,
       entry,
-      message: entry.score === score 
+      rank: playerRank,
+      message: entryScore === score 
         ? 'New high score submitted!' 
         : 'Entry exists with higher score, not updated',
       rewards_awarded: rewardsAwarded,

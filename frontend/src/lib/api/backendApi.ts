@@ -350,6 +350,7 @@ export const backendApi = {
   }): Promise<{ 
     success: boolean; 
     entry: TournamentLeaderboardEntry; 
+    rank: number;
     message: string;
     rewards_awarded: boolean;
     xp_earned: number;

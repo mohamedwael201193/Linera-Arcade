@@ -51,6 +51,7 @@ export interface ChainReactionGame {
   startedAt: number;
   endedAt: number;
   cellsCleared: number;
+  rank?: number;  // Actual rank from backend (after submission)
 }
 
 export interface ChainReactionTournament {
@@ -262,11 +263,13 @@ export function useTournament() {
    * The score has already been calculated and validated by the contract.
    * The backend indexes this for global leaderboard display AND awards XP/coins.
    * Verification can always be done on-chain by replaying the moves.
+   * 
+   * Returns the player's actual rank in the tournament.
    */
-  const submitToBackend = useCallback(async (completedGame: ChainReactionGame) => {
+  const submitToBackend = useCallback(async (completedGame: ChainReactionGame): Promise<number> => {
     if (!tournament || !walletAddress) {
       console.log('⚠️ Cannot submit to backend: missing tournament or wallet');
-      return;
+      return 0;
     }
 
     // Get the chain ID - this is what the user can query to verify on-chain
@@ -309,14 +312,17 @@ export function useTournament() {
       });
       
       if (result.rewards_awarded) {
-        console.log(`✅ Backend submission result: ${result.message} (+${result.xp_earned} XP, +${result.coins_earned} coins)`);
+        console.log(`✅ Backend submission result: ${result.message} (+${result.xp_earned} XP, +${result.coins_earned} coins), Rank: #${result.rank}`);
       } else {
-        console.log(`✅ Backend submission result: ${result.message}`);
+        console.log(`✅ Backend submission result: ${result.message}, Rank: #${result.rank}`);
       }
+      
+      return result.rank || 0;
     } catch (err) {
       // Don't fail the game if backend submission fails
       // The on-chain record is the source of truth
       console.error('⚠️ Failed to submit to backend (non-critical):', err);
+      return 0;
     }
   }, [tournament, walletAddress]);
 
@@ -438,15 +444,19 @@ export function useTournament() {
       
       if (result.playerTournamentGame) {
         const newGame = result.playerTournamentGame;
-        setGame(newGame);
         
-        // If game ended, submit to backend indexer and reload leaderboard
+        // If game ended, submit to backend indexer and get rank
+        let playerRank = 0;
         if (newGame.status !== 'IN_PROGRESS') {
-          // Submit to backend FIRST (so our entry appears in leaderboard)
-          await submitToBackend(newGame);
+          // Submit to backend FIRST and get the actual rank
+          playerRank = await submitToBackend(newGame);
+          // Set game with the actual rank
+          setGame({ ...newGame, rank: playerRank });
           // Then reload leaderboard from backend
           await loadLeaderboard();
           await loadPlayerStats();
+        } else {
+          setGame(newGame);
         }
         
         return {
@@ -457,6 +467,7 @@ export function useTournament() {
           chainLength: newGame.currentChain,
           movesRemaining: newGame.maxMoves - newGame.movesUsed,
           status: newGame.status,
+          rank: playerRank > 0 ? playerRank : undefined,
           // XP/coins are SECONDARY rewards
           xpEarned: newGame.status !== 'IN_PROGRESS' ? 50 : undefined, // Capped
           coinsEarned: newGame.status !== 'IN_PROGRESS' ? 30 : undefined, // Capped
