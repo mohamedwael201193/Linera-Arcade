@@ -30,3 +30,55 @@ export async function getDb() {
 export function isUsingPostgres() {
   return usePostgres;
 }
+
+// =============================================================================
+// TOURNAMENT LEADERBOARD INTERFACE
+// =============================================================================
+
+export interface TournamentLeaderboardEntry {
+  id: number;
+  tournament_id: number;
+  tournament_name: string;
+  player_address: string;
+  username: string;
+  chain_id: string;
+  score: number;
+  seed: number;
+  moves: number[];
+  moves_used: number;
+  submitted_at: Date;
+}
+
+/**
+ * Unified leaderboard database interface.
+ * Works with both memory.ts and postgres.ts.
+ */
+export const leaderboardDb = {
+  async submitTournamentEntry(input: {
+    tournament_id: number;
+    tournament_name: string;
+    player_address: string;
+    username: string;
+    chain_id: string;
+    score: number;
+    seed: number;
+    moves: number[];
+    moves_used: number;
+  }): Promise<TournamentLeaderboardEntry> {
+    const database = await getDb();
+    return database.submitTournamentEntry(input);
+  },
+
+  async getTournamentLeaderboard(tournamentId: number, limit?: number): Promise<(TournamentLeaderboardEntry & { rank: number })[]> {
+    const database = await getDb();
+    return database.getTournamentLeaderboard(tournamentId, limit);
+  },
+
+  async getPlayerTournamentEntry(
+    tournamentId: number,
+    playerAddress: string
+  ): Promise<(TournamentLeaderboardEntry & { rank: number }) | null> {
+    const database = await getDb();
+    return database.getPlayerTournamentEntry(tournamentId, playerAddress);
+  },
+};

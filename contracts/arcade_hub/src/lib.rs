@@ -1177,6 +1177,8 @@ pub struct Player {
     pub predictions_made: u64,
     /// Predictions won
     pub predictions_won: u64,
+    /// Total tournament submissions (simple counter)
+    pub tournament_submissions: u64,
 }
 
 impl Player {
@@ -1193,6 +1195,7 @@ impl Player {
             last_daily_claim: 0,
             predictions_made: 0,
             predictions_won: 0,
+            tournament_submissions: 0,
         }
     }
 
@@ -1592,6 +1595,439 @@ impl Prediction {
     }
 }
 
+// =============================================================================
+// TOURNAMENT ON-CHAIN GAMES - Chain Reaction
+// =============================================================================
+// 
+// DESIGN PHILOSOPHY:
+// - Every move is on-chain, executed on player's microchain
+// - Auto-signer for UX, wallet address for identity (NEVER keyed by auto-signer)
+// - Tournament-first: Fixed seeds, weekly challenges, competitive leaderboard
+// - Anti-cheat by design: All randomness derived on-chain, moves are replayable
+// - Rewards are SECONDARY to rank/reputation (XP/coins capped, non-farmable)
+// - Leaderboards are isolated for future microchain splitting
+// 
+// This game ONLY makes sense on Linera - try doing 10 blockchain txs in 30s elsewhere.
+// =============================================================================
+
+/// Status of a Chain Reaction tournament game.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize, async_graphql::Enum)]
+pub enum ChainReactionGameStatus {
+    #[default]
+    /// Game is in progress
+    InProgress,
+    /// Game completed (moves exhausted)
+    Completed,
+    /// Perfect clear achieved (all cells cleared)
+    PerfectClear,
+    /// Game was forfeited
+    Forfeited,
+}
+
+/// Active Chain Reaction game state on a player's microchain.
+/// 
+/// CRITICAL: This state is stored per-player on their OWN microchain.
+/// The contract processes moves deterministically - same seed + moves = same result.
+/// Move history enables full verification by ANY community member.
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "ChainReactionGameInput")]
+pub struct ChainReactionGame {
+    /// 6x6 grid, each cell contains energy level (0-3, explodes at 4)
+    pub grid: Vec<u8>,
+    /// Current move number (0-9)
+    pub moves_used: u8,
+    /// Maximum moves allowed (default 10)
+    pub max_moves: u8,
+    /// Current score
+    pub score: u64,
+    /// Current chain multiplier (resets each move)
+    pub current_chain: u32,
+    /// Best chain achieved this game
+    pub best_chain: u32,
+    /// Game status
+    pub status: ChainReactionGameStatus,
+    /// Deterministic seed (derived from tournament + player for fairness)
+    /// IMMUTABLE once set - any Linera user can verify the game
+    pub seed: u64,
+    /// Move history for verification (cell positions 0-35)
+    /// This enables FULL replay: verify_game(seed, moves) → score
+    pub move_history: Vec<u8>,
+    /// Tournament ID this game belongs to
+    pub tournament_id: u64,
+    /// When game started (microseconds)
+    pub started_at: u64,
+    /// When game ended (microseconds, 0 if in progress)
+    pub ended_at: u64,
+    /// Total cells cleared during this game
+    pub cells_cleared: u32,
+}
+
+impl Default for ChainReactionGame {
+    fn default() -> Self {
+        Self {
+            grid: vec![0u8; 36],
+            moves_used: 0,
+            max_moves: 10,
+            score: 0,
+            current_chain: 0,
+            best_chain: 0,
+            status: ChainReactionGameStatus::InProgress,
+            seed: 0,
+            move_history: Vec::new(),
+            tournament_id: 0,
+            started_at: 0,
+            ended_at: 0,
+            cells_cleared: 0,
+        }
+    }
+}
+
+impl ChainReactionGame {
+    /// Create a new game with the given seed and tournament.
+    /// Seed MUST be derived deterministically from tournament + player address.
+    pub fn new(seed: u64, tournament_id: u64, timestamp: u64) -> Self {
+        let mut game = Self {
+            seed,
+            tournament_id,
+            started_at: timestamp,
+            max_moves: 10,
+            ..Default::default()
+        };
+        // Initialize grid with seeded random cells
+        game.initialize_grid();
+        game
+    }
+
+    /// Initialize the grid with deterministic "hot" cells based on seed.
+    /// Creates 6-10 pre-filled cells to make the puzzle interesting.
+    fn initialize_grid(&mut self) {
+        let mut rng_seed = self.seed;
+        
+        // Place 6-10 initial cells with energy 1-3
+        let num_cells = 6 + ((rng_seed >> 32) % 5) as usize; // 6-10 cells
+        
+        for _ in 0..num_cells {
+            // LCG random number generator (deterministic)
+            rng_seed = rng_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let pos = ((rng_seed >> 16) % 36) as usize;
+            
+            rng_seed = rng_seed.wrapping_mul(1103515245).wrapping_add(12345);
+            let energy = 1 + ((rng_seed >> 16) % 3) as u8; // 1-3 energy
+            
+            // Only place if cell is empty or has less energy
+            if self.grid[pos] < energy {
+                self.grid[pos] = energy;
+            }
+        }
+    }
+
+    /// Process a move: place energy orb at position.
+    /// Returns (cells_cleared, chain_length) for this move.
+    /// 
+    /// CRITICAL: This is the core deterministic game logic.
+    /// The EXACT same algorithm runs on-chain - no client authority.
+    pub fn make_move(&mut self, position: u8) -> Option<(u32, u32)> {
+        if self.status != ChainReactionGameStatus::InProgress {
+            return None;
+        }
+        if position >= 36 {
+            return None;
+        }
+        if self.moves_used >= self.max_moves {
+            return None;
+        }
+
+        // Record move for verification
+        self.move_history.push(position);
+        self.moves_used += 1;
+
+        // Place energy orb
+        self.grid[position as usize] += 1;
+
+        // Process chain reactions
+        let (cells_cleared, chain_length) = self.process_chain_reactions();
+        
+        // Update score: cells × chain × 10
+        let move_score = (cells_cleared as u64) * (chain_length as u64).max(1) * 10;
+        self.score += move_score;
+        self.cells_cleared += cells_cleared;
+
+        // Track best chain
+        if chain_length > self.best_chain {
+            self.best_chain = chain_length;
+        }
+
+        // Check end conditions
+        if self.grid.iter().all(|&c| c == 0) {
+            // Perfect clear! Bonus points
+            self.status = ChainReactionGameStatus::PerfectClear;
+            let moves_remaining = self.max_moves - self.moves_used;
+            self.score += 500 + (moves_remaining as u64 * 100); // Efficiency bonus
+        } else if self.moves_used >= self.max_moves {
+            self.status = ChainReactionGameStatus::Completed;
+        }
+
+        Some((cells_cleared, chain_length))
+    }
+
+    /// Process all chain reactions until grid is stable.
+    /// Returns (total_cells_cleared, max_chain_length).
+    /// 
+    /// DETERMINISTIC ALGORITHM - same input = same output, always.
+    fn process_chain_reactions(&mut self) -> (u32, u32) {
+        let mut total_cleared = 0u32;
+        let mut chain_length = 0u32;
+
+        loop {
+            let mut exploded_this_round = false;
+
+            // Check all cells for explosions (≥4 energy)
+            for pos in 0..36 {
+                if self.grid[pos] >= 4 {
+                    exploded_this_round = true;
+                    total_cleared += 1;
+                    
+                    // Cell explodes - reset to 0
+                    self.grid[pos] = 0;
+
+                    // Spread energy to adjacent cells (up, down, left, right)
+                    let row = pos / 6;
+                    let col = pos % 6;
+
+                    // Up
+                    if row > 0 {
+                        self.grid[pos - 6] += 1;
+                    }
+                    // Down
+                    if row < 5 {
+                        self.grid[pos + 6] += 1;
+                    }
+                    // Left
+                    if col > 0 {
+                        self.grid[pos - 1] += 1;
+                    }
+                    // Right
+                    if col < 5 {
+                        self.grid[pos + 1] += 1;
+                    }
+                }
+            }
+
+            if exploded_this_round {
+                chain_length += 1;
+            } else {
+                break;
+            }
+        }
+
+        self.current_chain = chain_length;
+        (total_cleared, chain_length)
+    }
+
+    /// Verify a game by replaying moves from seed.
+    /// Returns the final score if valid, None if moves are invalid.
+    /// 
+    /// PUBLIC VERIFICATION: Any Linera community member can call this
+    /// to verify any tournament entry. This is a FEATURE, not a debug tool.
+    pub fn verify(seed: u64, tournament_id: u64, moves: &[u8]) -> Option<u64> {
+        let mut game = Self::new(seed, tournament_id, 0);
+        
+        for &pos in moves {
+            if game.make_move(pos).is_none() {
+                return None; // Invalid move
+            }
+        }
+        
+        Some(game.score)
+    }
+}
+
+/// A tournament for Chain Reaction.
+/// 
+/// TOURNAMENT-FIRST DESIGN:
+/// - Fixed seed = everyone plays the EXACT same grid
+/// - Weekly challenges create competitive pressure
+/// - Leaderboard entries are verifiable by anyone
+/// - Multiple attempts allowed (configurable)
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "ChainReactionTournamentInput")]
+pub struct ChainReactionTournament {
+    /// Unique tournament ID
+    pub id: u64,
+    /// Tournament name (e.g., "Week 4 Challenge")
+    pub name: String,
+    /// Fixed seed - EVERYONE plays the same grid
+    pub seed: u64,
+    /// When tournament started (microseconds)
+    pub start_time: u64,
+    /// When tournament ends (microseconds)
+    pub end_time: u64,
+    /// Whether tournament is active
+    pub is_active: bool,
+    /// Maximum attempts per player (0 = unlimited)
+    pub max_attempts: u32,
+    /// Total submissions received
+    pub total_submissions: u64,
+    /// Top score so far
+    pub top_score: u64,
+    /// Top scorer username
+    pub top_scorer: String,
+}
+
+impl ChainReactionTournament {
+    pub fn new(id: u64, name: String, seed: u64, start_time: u64, duration_secs: u64, max_attempts: u32) -> Self {
+        Self {
+            id,
+            name,
+            seed,
+            start_time,
+            end_time: start_time + duration_secs * 1_000_000,
+            is_active: true,
+            max_attempts,
+            total_submissions: 0,
+            top_score: 0,
+            top_scorer: String::new(),
+        }
+    }
+
+    /// Check if tournament is accepting submissions
+    pub fn is_accepting(&self, current_time: u64) -> bool {
+        self.is_active && current_time >= self.start_time && current_time < self.end_time
+    }
+
+    /// Time remaining in microseconds
+    pub fn time_remaining(&self, current_time: u64) -> u64 {
+        if current_time >= self.end_time {
+            0
+        } else {
+            self.end_time - current_time
+        }
+    }
+}
+
+/// Tournament leaderboard entry.
+/// 
+/// LEADERBOARD ISOLATION:
+/// - Designed to be movable to separate microchains later
+/// - Contains all data needed for verification
+/// - Rank is PRIMARY reward, not XP/coins
+#[derive(Clone, Debug, Serialize, Deserialize, SimpleObject, InputObject)]
+#[graphql(input_name = "TournamentLeaderboardEntryInput")]
+pub struct TournamentLeaderboardEntry {
+    /// Tournament ID this entry belongs to
+    pub tournament_id: u64,
+    /// Player wallet address (identity)
+    pub player: AccountOwner,
+    /// Player username
+    pub username: String,
+    /// Final score
+    pub score: u64,
+    /// Best chain achieved
+    pub best_chain: u32,
+    /// Moves used
+    pub moves_used: u8,
+    /// Move history for verification
+    pub moves: Vec<u8>,
+    /// Tournament seed (for verification)
+    pub seed: u64,
+    /// When submitted (microseconds)
+    pub submitted_at: u64,
+    /// Rank in tournament (updated on insert)
+    pub rank: u32,
+    /// Number of attempts used
+    pub attempts: u32,
+}
+
+/// Response for starting a tournament game.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct TournamentGameStartedResponse {
+    pub success: bool,
+    /// The tournament seed (same for everyone)
+    pub seed: u64,
+    /// Initial grid state
+    pub grid: Vec<u8>,
+    /// Tournament name
+    pub tournament_name: String,
+    /// Time remaining (microseconds)
+    pub time_remaining: u64,
+}
+
+/// Response for making a tournament move.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct TournamentMoveResponse {
+    pub success: bool,
+    /// Updated grid after move and chain reactions
+    pub grid: Vec<u8>,
+    /// Current score
+    pub score: u64,
+    /// Cells cleared this move
+    pub cells_cleared: u32,
+    /// Chain length this move
+    pub chain_length: u32,
+    /// Moves remaining
+    pub moves_remaining: u8,
+    /// Game status
+    pub status: ChainReactionGameStatus,
+    /// If game ended, XP earned (CAPPED, secondary reward)
+    pub xp_earned: Option<u64>,
+    /// If game ended, coins earned (CAPPED, secondary reward)
+    pub coins_earned: Option<u64>,
+    /// If game ended, rank on leaderboard
+    pub rank: Option<u32>,
+}
+
+/// Response for tournament leaderboard query.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct TournamentLeaderboardResponse {
+    pub tournament_id: u64,
+    pub tournament_name: String,
+    pub entries: Vec<TournamentLeaderboardEntry>,
+    pub total_entries: u64,
+    pub time_remaining: u64,
+    pub is_active: bool,
+}
+
+/// Cached leaderboard received from hub chain.
+/// Stored on player chains after requesting leaderboard from hub.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct CachedLeaderboard {
+    pub entries: Vec<TournamentLeaderboardEntry>,
+    pub tournament_id: u64,
+    pub tournament_name: String,
+    pub total_entries: u64,
+    pub time_remaining: u64,
+    pub is_active: bool,
+    /// Timestamp when this cache was last updated (microseconds)
+    pub updated_at: u64,
+}
+
+/// Response for leaderboard request operation.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct LeaderboardRequestedResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// Response for creating a tournament.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct TournamentCreatedResponse {
+    pub success: bool,
+    pub tournament_id: u64,
+    pub name: String,
+    pub seed: u64,
+    pub end_time: u64,
+}
+
+/// Response for ending a tournament.
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct TournamentEndedResponse {
+    pub success: bool,
+    pub tournament_id: u64,
+    pub total_submissions: u64,
+    pub winner_username: String,
+    pub winning_score: u64,
+}
+
 /// Operations that can be executed on the arcade hub.
 #[derive(Debug, Clone, Serialize, Deserialize, GraphQLMutationRoot)]
 pub enum Operation {
@@ -1681,6 +2117,61 @@ pub enum Operation {
 
     /// Force clear/reset room state (for stuck/abandoned rooms).
     ClearRoom,
+
+    // ========== TOURNAMENT ON-CHAIN GAMES (Chain Reaction) ==========
+    // 
+    // MICROCHAIN EXECUTION MODEL:
+    // - Each move executes on player's OWN microchain
+    // - Signed via auto-signer (UX), keyed by wallet address (identity)
+    // - No backend mediation, no optimistic UI
+    // - Mutation → block confirmation → query → render
+    // 
+    // If it feels slow, we ACCEPT it. This is a SHOWCASE of real on-chain interaction.
+    // ==========================================================================
+
+    /// Create a new tournament (admin only).
+    /// Everyone plays the SAME fixed seed grid.
+    CreateChainReactionTournament {
+        /// Tournament name (e.g., "Week 4 Challenge")
+        name: String,
+        /// Fixed seed - derived deterministically, same for everyone
+        seed: u64,
+        /// Duration in seconds (e.g., 604800 = 1 week)
+        duration_secs: u64,
+        /// Max attempts per player (0 = unlimited)
+        max_attempts: u32,
+    },
+
+    /// Start a tournament game on your microchain.
+    /// This begins your attempt at the current week's challenge.
+    StartTournamentGame,
+
+    /// Make a move in your active tournament game.
+    /// Each move is recorded on-chain for verification.
+    /// position: 0-35 (6x6 grid)
+    TournamentMove { position: u8 },
+
+    /// Forfeit your current tournament game attempt.
+    ForfeitTournamentGame,
+
+    /// End the current tournament (admin only).
+    EndChainReactionTournament,
+
+    /// Request the tournament leaderboard from the hub chain.
+    /// 
+    /// LINERA CROSS-CHAIN PATTERN (same as multiplayer):
+    /// 1. Player calls this on THEIR OWN chain
+    /// 2. Sends LeaderboardRequest message to hub
+    /// 3. Hub processes inbox (applies all TournamentScoreSync messages)
+    /// 4. Hub sends LeaderboardResponse back to player
+    /// 5. Player's chain stores the leaderboard locally
+    /// 6. Player queries their own chain for the data
+    /// 
+    /// This works because:
+    /// - Each chain can only propose blocks for itself
+    /// - Cross-chain messages trigger inbox processing on receipt
+    /// - Any user can request data from any chain via messages
+    RequestLeaderboard { limit: Option<u32> },
 }
 
 // =============================================================================
@@ -1851,6 +2342,18 @@ pub enum ArcadeResponse {
     MoveMade(MoveMadeResponse),
     /// Game ended (forfeit/timeout).
     GameEnded(GameEndedResponse),
+
+    // ========== TOURNAMENT ON-CHAIN GAME RESPONSES ==========
+    /// Tournament created successfully.
+    TournamentCreated(TournamentCreatedResponse),
+    /// Tournament game started.
+    TournamentGameStarted(TournamentGameStartedResponse),
+    /// Tournament move processed.
+    TournamentMoveProcessed(TournamentMoveResponse),
+    /// Tournament ended.
+    TournamentEnded(TournamentEndedResponse),
+    /// Leaderboard request sent to hub (cross-chain).
+    LeaderboardRequested(LeaderboardRequestedResponse),
 }
 
 /// Messages sent between chains for hub aggregation.
@@ -1933,6 +2436,32 @@ pub enum Message {
         is_winner: bool,
         game_type: MultiplayerGameType,
     },
+    
+    /// Tournament score sync - sent from player's chain to hub chain
+    /// when a tournament game is completed, so leaderboard is global.
+    TournamentScoreSync {
+        entry: TournamentLeaderboardEntry,
+    },
+    
+    /// Request leaderboard from hub chain.
+    /// Sent from player's chain → hub chain.
+    /// Hub will process inbox and respond with LeaderboardResponse.
+    LeaderboardRequest {
+        requester_chain: ChainId,
+        limit: u32,
+    },
+    
+    /// Leaderboard response from hub to player.
+    /// Sent from hub chain → player's chain.
+    /// Contains the full leaderboard data after inbox processing.
+    LeaderboardResponse {
+        entries: Vec<TournamentLeaderboardEntry>,
+        tournament_id: u64,
+        tournament_name: String,
+        total_entries: u64,
+        time_remaining: u64,
+        is_active: bool,
+    },
 }
 
 /// Instantiation argument for the arcade hub application.
@@ -2006,6 +2535,20 @@ pub enum ArcadeError {
     CannotJoinOwnRoom,
     #[error("Room is waiting for players")]
     RoomWaitingForPlayers,
+
+    // ========== TOURNAMENT ON-CHAIN GAME ERRORS ==========
+    #[error("Tournament game already in progress")]
+    TournamentGameInProgress,
+    #[error("No active tournament game")]
+    NoActiveTournamentGame,
+    #[error("Invalid grid position")]
+    InvalidGridPosition,
+    #[error("No active tournament")]
+    NoActiveTournament,
+    #[error("Tournament has ended")]
+    TournamentEnded,
+    #[error("Already submitted to this tournament")]
+    AlreadySubmittedToTournament,
 }
 
 impl ArcadeError {

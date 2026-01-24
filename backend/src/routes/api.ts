@@ -491,13 +491,17 @@ function transformActivity(activity: any) {
     'REGISTERED': 'GAME',
     'MULTIPLAYER_WIN': 'WIN',
     'MULTIPLAYER_LOSS': 'GAME',
+    'TOURNAMENT_COMPLETED': 'WIN',
   };
   
   // Generate description from details
   let description = '';
   let coinsChange = 0;
   
-  if (activity.action === 'MULTIPLAYER_WIN') {
+  if (activity.action === 'TOURNAMENT_COMPLETED') {
+    description = `🏆 Completed tournament "${activity.details.tournament_name}" with score ${activity.details.score} (+${activity.details.xp_earned} XP)`;
+    coinsChange = activity.details.coins_earned || 0;
+  } else if (activity.action === 'MULTIPLAYER_WIN') {
     const gameTypeName = activity.details.game_type?.replace(/-/g, ' ').replace(/_/g, ' ') || 'multiplayer';
     description = `🏆 Won ${gameTypeName} vs ${activity.details.opponent}! (+${activity.details.xp_earned} XP)`;
     coinsChange = activity.details.coins_earned || 0;
@@ -1221,6 +1225,195 @@ router.post('/predictions/crypto/rounds/:id/auto-resolve', requireApiKey, async 
   } catch (error) {
     console.error('Error auto-resolving crypto round:', error);
     res.status(500).json({ error: 'Failed to resolve crypto round' });
+  }
+});
+
+// =============================================================================
+// TOURNAMENT LEADERBOARD ROUTES (Read-only Indexer)
+// =============================================================================
+
+/**
+ * Submit a tournament entry.
+ * The backend acts as a READ-ONLY INDEXER.
+ * Score is NOT calculated here - it must be verified on-chain via replay.
+ * This records the submission for leaderboard display AND awards XP/coins.
+ */
+const SubmitTournamentEntrySchema = z.object({
+  tournament_id: z.number().int().min(0),
+  tournament_name: z.string().min(1).max(100),
+  player_address: z.string().min(10).max(66),
+  username: z.string().min(1).max(50),
+  chain_id: z.string().min(1).max(100),
+  score: z.number().int().min(0),
+  seed: z.number().int(),
+  moves: z.array(z.number().int()),
+  moves_used: z.number().int().min(0),
+  // Optional reward fields - if not provided, calculate based on score
+  xp_earned: z.number().int().min(0).optional(),
+  coins_earned: z.number().int().min(0).optional(),
+});
+
+router.post('/tournament/submit', async (req: Request, res: Response) => {
+  try {
+    const parsed = SubmitTournamentEntrySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ 
+        error: 'Invalid request body', 
+        details: parsed.error.errors 
+      });
+    }
+
+    const {
+      tournament_id,
+      tournament_name,
+      player_address,
+      username,
+      chain_id,
+      score,
+      seed,
+      moves,
+      moves_used,
+      xp_earned,
+      coins_earned,
+    } = parsed.data;
+
+    const database = await ensureDb();
+
+    // Submit to tournament leaderboard
+    const entry = await database.submitTournamentEntry({
+      tournament_id,
+      tournament_name,
+      player_address,
+      username,
+      chain_id,
+      score,
+      seed,
+      moves,
+      moves_used,
+    });
+
+    // Calculate rewards if not provided
+    // XP: base 25 + score bonus (1 XP per 10 points, max 50 bonus)
+    const calculatedXp = xp_earned ?? Math.min(25 + Math.floor(score / 10), 75);
+    // Coins: base 20 + score bonus (1 coin per 20 points, max 30 bonus)
+    const calculatedCoins = coins_earned ?? Math.min(20 + Math.floor(score / 20), 50);
+
+    // Only award XP/coins if this is a new high score (entry.score === score)
+    let newTotalXp = 0;
+    let rewardsAwarded = false;
+    
+    if (entry.score === score) {
+      // This is a new/better score - award rewards
+      try {
+        // Get or create player
+        let player = await database.getPlayerByWallet(player_address);
+        if (player) {
+          // Update XP
+          const updatedPlayer = await database.updatePlayerXP(player_address, calculatedXp);
+          if (updatedPlayer) {
+            newTotalXp = updatedPlayer.total_xp;
+          }
+          // Add coins
+          await database.addCoins(player_address, calculatedCoins);
+          
+          // Log activity
+          await database.logActivity(
+            player_address,
+            username,
+            'TOURNAMENT_COMPLETED',
+            {
+              tournament_id,
+              tournament_name,
+              score,
+              moves_used,
+              xp_earned: calculatedXp,
+              coins_earned: calculatedCoins,
+            }
+          );
+          
+          rewardsAwarded = true;
+          console.log(`🏆 Tournament completed: ${username} scored ${score} (+${calculatedXp} XP, +${calculatedCoins} coins)`);
+        }
+      } catch (err) {
+        console.error('Failed to award tournament rewards (non-critical):', err);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      entry,
+      message: entry.score === score 
+        ? 'New high score submitted!' 
+        : 'Entry exists with higher score, not updated',
+      rewards_awarded: rewardsAwarded,
+      xp_earned: rewardsAwarded ? calculatedXp : 0,
+      coins_earned: rewardsAwarded ? calculatedCoins : 0,
+      new_total_xp: newTotalXp,
+    });
+  } catch (error) {
+    console.error('Error submitting tournament entry:', error);
+    res.status(500).json({ error: 'Failed to submit tournament entry' });
+  }
+});
+
+/**
+ * Get tournament leaderboard.
+ * Returns sorted leaderboard with ranks.
+ */
+router.get('/tournament/:tournamentId/leaderboard', async (req: Request, res: Response) => {
+  try {
+    const tournamentId = parseInt(req.params.tournamentId);
+    if (isNaN(tournamentId) || tournamentId < 0) {
+      return res.status(400).json({ error: 'Invalid tournament ID' });
+    }
+
+    const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+    const leaderboard = await (await ensureDb()).getTournamentLeaderboard(tournamentId, limit);
+
+    res.json({
+      tournament_id: tournamentId,
+      total_entries: leaderboard.length,
+      leaderboard,
+    });
+  } catch (error) {
+    console.error('Error fetching tournament leaderboard:', error);
+    res.status(500).json({ error: 'Failed to fetch tournament leaderboard' });
+  }
+});
+
+/**
+ * Get a specific player's tournament entry with their rank.
+ */
+router.get('/tournament/:tournamentId/player/:playerAddress', async (req: Request, res: Response) => {
+  try {
+    const tournamentId = parseInt(req.params.tournamentId);
+    const playerAddress = req.params.playerAddress;
+
+    if (isNaN(tournamentId) || tournamentId < 0) {
+      return res.status(400).json({ error: 'Invalid tournament ID' });
+    }
+
+    if (!playerAddress || playerAddress.length < 10) {
+      return res.status(400).json({ error: 'Invalid player address' });
+    }
+
+    const entry = await (await ensureDb()).getPlayerTournamentEntry(tournamentId, playerAddress);
+
+    if (!entry) {
+      return res.status(404).json({ 
+        error: 'Player has not submitted to this tournament',
+        tournament_id: tournamentId,
+        player_address: playerAddress,
+      });
+    }
+
+    res.json({
+      tournament_id: tournamentId,
+      entry,
+    });
+  } catch (error) {
+    console.error('Error fetching player tournament entry:', error);
+    res.status(500).json({ error: 'Failed to fetch player tournament entry' });
   }
 });
 

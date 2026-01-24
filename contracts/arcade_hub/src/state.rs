@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! State management for the Arcade Hub application.
-//! Extended with Token Economy, Prediction Markets, Event-Sourced Model, and On-Chain Multiplayer.
+//! Extended with Token Economy, Prediction Markets, Event-Sourced Model, On-Chain Multiplayer,
+//! and Tournament On-Chain Games (Chain Reaction).
 
-use arcade_hub::{ArcadeEvent, CryptoRound, GamePlayedEvent, GameScore, LeaderboardEntry, MultiplayerGameRoom, Player, Prediction, WorldEvent};
+use arcade_hub::{
+    ArcadeEvent, CachedLeaderboard, ChainReactionGame, ChainReactionTournament, CryptoRound, GamePlayedEvent,
+    GameScore, LeaderboardEntry, MultiplayerGameRoom, Player, Prediction,
+    TournamentLeaderboardEntry, WorldEvent,
+};
 use linera_sdk::{
     linera_base_types::{AccountOwner, ChainId},
     views::{linera_views, LogView, MapView, RegisterView, RootView, ViewStorageContext},
@@ -79,4 +84,37 @@ pub struct ArcadeHubState {
     pub multiplayer_room: RegisterView<Option<MultiplayerGameRoom>>,
     /// Active multiplayer rooms by owner (deprecated - use player_room_ids).
     pub player_rooms: MapView<AccountOwner, Vec<ChainId>>,
+
+    // ========== TOURNAMENT ON-CHAIN GAMES (Chain Reaction) ==========
+    // 
+    // LEADERBOARD ISOLATION DESIGN:
+    // - Tournament state is separate from player state
+    // - Leaderboards can be moved to separate microchains later
+    // - Data structures are self-contained for future splitting
+    // 
+    // ANTI-CHEAT:
+    // - Fixed seeds = same grid for everyone
+    // - Move history enables full verification
+    // - No client-side RNG, all on-chain
+    // ==========================================================================
+    
+    /// Current active tournament (only one active at a time)
+    pub active_tournament: RegisterView<Option<ChainReactionTournament>>,
+    /// Counter for generating unique tournament IDs
+    pub tournament_counter: RegisterView<u64>,
+    /// Active tournament game for each player (on their microchain)
+    pub player_tournament_games: MapView<AccountOwner, ChainReactionGame>,
+    /// Tournament leaderboard entries (top 100, sorted by score desc)
+    /// ISOLATION: This can be moved to a separate microchain later
+    pub tournament_leaderboard: LogView<TournamentLeaderboardEntry>,
+    /// Player's attempt count for current tournament
+    pub player_tournament_attempts: MapView<AccountOwner, u32>,
+    /// Historical tournaments (for records)
+    pub past_tournaments: LogView<ChainReactionTournament>,
+    /// Total tournament games played across all tournaments
+    pub total_tournament_games: RegisterView<u64>,
+    
+    /// Cached leaderboard received from hub chain (for player chains)
+    /// This is updated when hub responds to LeaderboardRequest
+    pub cached_leaderboard: RegisterView<Option<CachedLeaderboard>>,
 }

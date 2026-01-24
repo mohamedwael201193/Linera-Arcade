@@ -9,6 +9,7 @@ import { GamePlayPage } from './pages/GamePlayPage';
 import { PredictionsPage } from './pages/PredictionsPage';
 import { ActivityPage } from './pages/ActivityPage';
 import MultiplayerOnChainPage from './pages/MultiplayerOnChainPage';
+import TournamentPage from './pages/TournamentPage';
 import { useLineraConnection } from './hooks/useLineraConnection';
 
 function App() {
@@ -40,6 +41,7 @@ function App() {
           <Route path="games" element={<GamesPage />} />
           <Route path="games/:gameId" element={<GamePlayPage />} />
           <Route path="multiplayer" element={<MultiplayerOnChainPage />} />
+          <Route path="tournament" element={<TournamentPage />} />
           <Route path="predictions" element={<PredictionsPage />} />
           <Route path="activity" element={<ActivityPage />} />
           <Route path="leaderboard" element={<LeaderboardPage />} />

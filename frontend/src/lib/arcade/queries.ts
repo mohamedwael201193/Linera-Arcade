@@ -455,6 +455,220 @@ export const GET_EVENT_COUNT = `
 `;
 
 // =============================================================================
+// TOURNAMENT ON-CHAIN GAME QUERIES (Chain Reaction)
+// =============================================================================
+// 
+// TOURNAMENT-FIRST DESIGN:
+// - Every move is on-chain, executed on player's microchain
+// - No backend mediation, no optimistic UI
+// - Mutation → block confirmation → query → render
+// - If it feels slow, we ACCEPT it - this is a SHOWCASE
+// =============================================================================
+
+/**
+ * Get the current active tournament
+ */
+export const GET_ACTIVE_TOURNAMENT = `
+  query GetActiveTournament {
+    activeTournament {
+      id
+      name
+      seed
+      startTime
+      endTime
+      isActive
+      maxAttempts
+      totalSubmissions
+      topScore
+      topScorer
+    }
+  }
+`;
+
+/**
+ * Get player's active tournament game
+ */
+export const GET_PLAYER_TOURNAMENT_GAME = `
+  query GetPlayerTournamentGame($wallet: String!) {
+    playerTournamentGame(wallet: $wallet) {
+      grid
+      movesUsed
+      maxMoves
+      score
+      currentChain
+      bestChain
+      status
+      seed
+      moveHistory
+      tournamentId
+      startedAt
+      endedAt
+      cellsCleared
+    }
+  }
+`;
+
+/**
+ * Get tournament leaderboard
+ * FAIRNESS: Entries include move history so anyone can verify
+ */
+export const GET_TOURNAMENT_LEADERBOARD = `
+  query GetTournamentLeaderboard($limit: Int) {
+    tournamentLeaderboard(limit: $limit) {
+      tournamentId
+      tournamentName
+      entries {
+        player
+        username
+        score
+        bestChain
+        movesUsed
+        moves
+        seed
+        submittedAt
+        rank
+        attempts
+      }
+      totalEntries
+      timeRemaining
+      isActive
+    }
+  }
+`;
+
+/**
+ * Get player's tournament statistics
+ */
+export const GET_PLAYER_TOURNAMENT_STATS = `
+  query GetPlayerTournamentStats($wallet: String!) {
+    playerTournamentStats(wallet: $wallet) {
+      bestScore
+      bestRank
+      attempts
+      tournamentId
+      tournamentName
+      totalSubmissions
+    }
+  }
+`;
+
+/**
+ * Verify a tournament game by replaying moves
+ * PUBLIC VERIFICATION: Any Linera community member can verify any entry
+ */
+export const VERIFY_TOURNAMENT_GAME = `
+  query VerifyTournamentGame($seed: String!, $moves: [Int!]!) {
+    verifyTournamentGame(seed: $seed, moves: $moves) {
+      valid
+      computedScore
+      message
+    }
+  }
+`;
+
+/**
+ * Get overall tournament statistics
+ */
+export const GET_TOURNAMENT_STATS = `
+  query GetTournamentStats {
+    tournamentStats {
+      totalGamesPlayed
+      activeTournamentId
+      activeTournamentName
+      currentTopScore
+      currentTopScorer
+    }
+  }
+`;
+
+// =============================================================================
+// TOURNAMENT MUTATIONS
+// =============================================================================
+
+/**
+ * Start a tournament game on your microchain
+ */
+export const START_TOURNAMENT_GAME = `
+  mutation StartTournamentGame {
+    startTournamentGame
+  }
+`;
+
+/**
+ * Make a move in your active tournament game
+ * position: 0-35 (6x6 grid)
+ */
+export const TOURNAMENT_MOVE = `
+  mutation TournamentMove($position: Int!) {
+    tournamentMove(position: $position)
+  }
+`;
+
+/**
+ * Forfeit your current tournament game attempt
+ */
+export const FORFEIT_TOURNAMENT_GAME = `
+  mutation ForfeitTournamentGame {
+    forfeitTournamentGame
+  }
+`;
+
+/**
+ * Create a new tournament (admin only)
+ */
+export const CREATE_TOURNAMENT = `
+  mutation CreateChainReactionTournament($name: String!, $seed: Int!, $durationSecs: Int!, $maxAttempts: Int!) {
+    createChainReactionTournament(name: $name, seed: $seed, durationSecs: $durationSecs, maxAttempts: $maxAttempts)
+  }
+`;
+
+/**
+ * Request leaderboard from hub chain.
+ * 
+ * LINERA CROSS-CHAIN PATTERN (same as multiplayer):
+ * 1. Player calls this mutation on THEIR OWN chain
+ * 2. Their chain sends LeaderboardRequest message to hub
+ * 3. Hub processes inbox (applies all TournamentScoreSync messages)
+ * 4. Hub sends LeaderboardResponse back to player's chain
+ * 5. Player's chain stores it in cachedLeaderboard
+ * 6. Query cachedLeaderboard to get the results
+ */
+export const REQUEST_LEADERBOARD = `
+  mutation RequestLeaderboard($limit: Int) {
+    requestLeaderboard(limit: $limit)
+  }
+`;
+
+/**
+ * Query the cached leaderboard (received from hub).
+ * Call REQUEST_LEADERBOARD first, wait for cross-chain sync, then query this.
+ */
+export const GET_CACHED_LEADERBOARD = `
+  query GetCachedLeaderboard {
+    cachedLeaderboard {
+      entries {
+        player
+        username
+        score
+        bestChain
+        movesUsed
+        moves
+        seed
+        submittedAt
+        rank
+        attempts
+      }
+      tournamentId
+      tournamentName
+      totalEntries
+      timeRemaining
+      isActive
+      updatedAt
+    }
+  }
+`;
+
+// =============================================================================
 // QUERY HELPERS
 // =============================================================================
 

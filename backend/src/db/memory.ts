@@ -93,6 +93,24 @@ export interface ActivityLog {
 }
 
 // =============================================================================
+// TOURNAMENT LEADERBOARD TYPES
+// =============================================================================
+
+export interface TournamentLeaderboardEntry {
+  id: number;
+  tournament_id: number;
+  tournament_name: string;
+  player_address: string;
+  username: string;
+  chain_id: string;
+  score: number;
+  seed: number;
+  moves: number[];
+  moves_used: number;
+  submitted_at: Date;
+}
+
+// =============================================================================
 // FILE PERSISTENCE
 // =============================================================================
 
@@ -108,6 +126,7 @@ interface PersistedData {
   worldEvents: [number, WorldEvent][];
   predictions: Prediction[];
   activityLogs: ActivityLog[];
+  tournamentLeaderboard: TournamentLeaderboardEntry[];
   nextIds: {
     playerId: number;
     scoreId: number;
@@ -115,6 +134,7 @@ interface PersistedData {
     eventId: number;
     predictionId: number;
     activityId: number;
+    tournamentEntryId: number;
   };
   stats: typeof stats;
 }
@@ -136,6 +156,7 @@ function saveData() {
       worldEvents: Array.from(worldEvents.entries()),
       predictions: predictions,
       activityLogs: activityLogs,
+      tournamentLeaderboard: tournamentLeaderboard,
       nextIds: {
         playerId: nextPlayerId,
         scoreId: nextScoreId,
@@ -143,6 +164,7 @@ function saveData() {
         eventId: nextEventId,
         predictionId: nextPredictionId,
         activityId: nextActivityId,
+        tournamentEntryId: nextTournamentEntryId,
       },
       stats: stats,
     };
@@ -216,6 +238,15 @@ function loadData() {
       activityLogs.push(activity);
     }
     
+    // Restore tournament leaderboard
+    tournamentLeaderboard.length = 0;
+    if (data.tournamentLeaderboard) {
+      for (const entry of data.tournamentLeaderboard) {
+        entry.submitted_at = new Date(entry.submitted_at);
+        tournamentLeaderboard.push(entry);
+      }
+    }
+    
     // Restore IDs
     nextPlayerId = data.nextIds.playerId;
     nextScoreId = data.nextIds.scoreId;
@@ -223,6 +254,7 @@ function loadData() {
     nextEventId = data.nextIds.eventId;
     nextPredictionId = data.nextIds.predictionId;
     nextActivityId = data.nextIds.activityId;
+    nextTournamentEntryId = data.nextIds.tournamentEntryId || 1;
     
     // Restore stats
     Object.assign(stats, data.stats);
@@ -263,6 +295,7 @@ const cryptoRounds: Map<number, CryptoRound> = new Map();
 const worldEvents: Map<number, WorldEvent> = new Map();
 const predictions: Prediction[] = [];
 const activityLogs: ActivityLog[] = [];
+const tournamentLeaderboard: TournamentLeaderboardEntry[] = [];
 
 let nextPlayerId = 1;
 let nextScoreId = 1;
@@ -270,6 +303,7 @@ let nextRoundId = 1;
 let nextEventId = 1;
 let nextPredictionId = 1;
 let nextActivityId = 1;
+let nextTournamentEntryId = 1;
 
 // Stats
 const stats = {
@@ -1386,5 +1420,111 @@ export const memoryDb = {
     saveData();
     console.log(`✅ Re-seeded ${trendingEvents.length} fresh world events`);
     return { success: true, eventsCount: trendingEvents.length };
+  },
+
+  // =============================================================================
+  // TOURNAMENT LEADERBOARD OPERATIONS
+  // =============================================================================
+
+  /**
+   * Submit or update a tournament leaderboard entry.
+   * Only updates if the new score is higher than the existing score.
+   */
+  async submitTournamentEntry(input: {
+    tournament_id: number;
+    tournament_name: string;
+    player_address: string;
+    username: string;
+    chain_id: string;
+    score: number;
+    seed: number;
+    moves: number[];
+    moves_used: number;
+  }): Promise<TournamentLeaderboardEntry> {
+    const playerKey = `${input.tournament_id}-${input.player_address.toLowerCase()}`;
+    
+    // Find existing entry for this player in this tournament
+    const existingIndex = tournamentLeaderboard.findIndex(
+      e => e.tournament_id === input.tournament_id && 
+           e.player_address.toLowerCase() === input.player_address.toLowerCase()
+    );
+    
+    if (existingIndex !== -1) {
+      const existing = tournamentLeaderboard[existingIndex];
+      // Only update if new score is higher
+      if (input.score > existing.score) {
+        existing.score = input.score;
+        existing.seed = input.seed;
+        existing.moves = input.moves;
+        existing.moves_used = input.moves_used;
+        existing.submitted_at = new Date();
+        existing.chain_id = input.chain_id;
+        existing.username = input.username;
+        saveData();
+        console.log(`🏆 Updated tournament entry for ${input.player_address}: ${existing.score} -> ${input.score}`);
+        return existing;
+      } else {
+        console.log(`🏆 Kept existing higher score for ${input.player_address}: ${existing.score} >= ${input.score}`);
+        return existing;
+      }
+    }
+    
+    // Create new entry
+    const entry: TournamentLeaderboardEntry = {
+      id: nextTournamentEntryId++,
+      tournament_id: input.tournament_id,
+      tournament_name: input.tournament_name,
+      player_address: input.player_address.toLowerCase(),
+      username: input.username,
+      chain_id: input.chain_id,
+      score: input.score,
+      seed: input.seed,
+      moves: input.moves,
+      moves_used: input.moves_used,
+      submitted_at: new Date(),
+    };
+    
+    tournamentLeaderboard.push(entry);
+    saveData();
+    console.log(`🏆 New tournament entry for ${input.player_address}: ${input.score}`);
+    return entry;
+  },
+
+  /**
+   * Get tournament leaderboard sorted by:
+   * 1. Higher score first
+   * 2. Fewer moves wins tie
+   * 3. Earlier submission wins tie
+   * Returns entries with calculated ranks.
+   */
+  async getTournamentLeaderboard(tournamentId: number, limit: number = 100): Promise<(TournamentLeaderboardEntry & { rank: number })[]> {
+    const entries = tournamentLeaderboard
+      .filter(e => e.tournament_id === tournamentId)
+      .sort((a, b) => {
+        // 1. Sort by score DESC (higher score first)
+        if (b.score !== a.score) return b.score - a.score;
+        // 2. Sort by moves_used ASC (fewer moves wins tie)
+        if (a.moves_used !== b.moves_used) return a.moves_used - b.moves_used;
+        // 3. Sort by submitted_at ASC (earlier submission wins tie)
+        return a.submitted_at.getTime() - b.submitted_at.getTime();
+      })
+      .slice(0, limit);
+    
+    // Add ranks
+    return entries.map((entry, index) => ({
+      ...entry,
+      rank: index + 1,
+    }));
+  },
+
+  /**
+   * Get a player's entry for a specific tournament
+   */
+  async getPlayerTournamentEntry(
+    tournamentId: number,
+    playerAddress: string
+  ): Promise<(TournamentLeaderboardEntry & { rank: number }) | null> {
+    const allEntries = await this.getTournamentLeaderboard(tournamentId, 10000);
+    return allEntries.find(e => e.player_address.toLowerCase() === playerAddress.toLowerCase()) || null;
   }
 };

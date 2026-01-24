@@ -94,6 +94,24 @@ export interface ActivityLog {
 }
 
 // ============================================================================
+// TOURNAMENT LEADERBOARD TYPES
+// ============================================================================
+
+export interface TournamentLeaderboardEntry {
+  id: number;
+  tournament_id: number;
+  tournament_name: string;
+  player_address: string;
+  username: string;
+  chain_id: string;
+  score: number;
+  seed: number;
+  moves: number[];
+  moves_used: number;
+  submitted_at: Date;
+}
+
+// ============================================================================
 // POSTGRESQL DATABASE IMPLEMENTATION
 // ============================================================================
 
@@ -1192,6 +1210,121 @@ export const postgresDb = {
     
     console.log(`✅ Re-seeded ${trendingEvents.length} fresh world events`);
     return { success: true, eventsCount: trendingEvents.length };
+  },
+
+  // =============================================================================
+  // TOURNAMENT LEADERBOARD OPERATIONS
+  // =============================================================================
+
+  /**
+   * Submit or update a tournament leaderboard entry.
+   * Uses upsert - only updates if new score is higher.
+   */
+  async submitTournamentEntry(input: {
+    tournament_id: number;
+    tournament_name: string;
+    player_address: string;
+    username: string;
+    chain_id: string;
+    score: number;
+    seed: number;
+    moves: number[];
+    moves_used: number;
+  }): Promise<TournamentLeaderboardEntry> {
+    const playerAddress = input.player_address.toLowerCase();
+    
+    // Upsert: insert or update if new score is higher
+    const result = await query<TournamentLeaderboardEntry>(
+      `INSERT INTO tournament_leaderboard 
+        (tournament_id, tournament_name, player_address, username, chain_id, score, seed, moves, moves_used, submitted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       ON CONFLICT (tournament_id, player_address) 
+       DO UPDATE SET
+         score = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.score ELSE tournament_leaderboard.score END,
+         seed = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.seed ELSE tournament_leaderboard.seed END,
+         moves = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.moves ELSE tournament_leaderboard.moves END,
+         moves_used = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.moves_used ELSE tournament_leaderboard.moves_used END,
+         chain_id = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.chain_id ELSE tournament_leaderboard.chain_id END,
+         username = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN EXCLUDED.username ELSE tournament_leaderboard.username END,
+         submitted_at = CASE WHEN EXCLUDED.score > tournament_leaderboard.score THEN NOW() ELSE tournament_leaderboard.submitted_at END
+       RETURNING *`,
+      [
+        input.tournament_id,
+        input.tournament_name,
+        playerAddress,
+        input.username,
+        input.chain_id,
+        input.score,
+        input.seed,
+        JSON.stringify(input.moves),
+        input.moves_used
+      ]
+    );
+    
+    const entry = result.rows[0];
+    console.log(`🏆 Tournament entry for ${playerAddress}: score=${entry.score}`);
+    return entry;
+  },
+
+  /**
+   * Get tournament leaderboard sorted by:
+   * 1. Higher score first
+   * 2. Fewer moves wins tie
+   * 3. Earlier submission wins tie
+   * Returns entries with calculated ranks.
+   */
+  async getTournamentLeaderboard(tournamentId: number, limit: number = 100): Promise<(TournamentLeaderboardEntry & { rank: number })[]> {
+    const result = await query<TournamentLeaderboardEntry & { rank: number }>(
+      `SELECT 
+        *,
+        RANK() OVER (ORDER BY score DESC, moves_used ASC, submitted_at ASC) as rank
+       FROM tournament_leaderboard
+       WHERE tournament_id = $1
+       ORDER BY score DESC, moves_used ASC, submitted_at ASC
+       LIMIT $2`,
+      [tournamentId, limit]
+    );
+    
+    return result.rows.map(row => ({
+      ...row,
+      rank: Number(row.rank),
+      score: Number(row.score),
+      seed: Number(row.seed),
+      moves: typeof row.moves === 'string' ? JSON.parse(row.moves) : row.moves,
+      moves_used: Number(row.moves_used),
+    }));
+  },
+
+  /**
+   * Get a player's entry for a specific tournament
+   */
+  async getPlayerTournamentEntry(
+    tournamentId: number,
+    playerAddress: string
+  ): Promise<(TournamentLeaderboardEntry & { rank: number }) | null> {
+    const result = await query<TournamentLeaderboardEntry & { rank: number }>(
+      `SELECT 
+        t.*,
+        (SELECT COUNT(*) + 1 FROM tournament_leaderboard t2 
+         WHERE t2.tournament_id = t.tournament_id 
+         AND (t2.score > t.score OR (t2.score = t.score AND t2.submitted_at < t.submitted_at))
+        ) as rank
+       FROM tournament_leaderboard t
+       WHERE t.tournament_id = $1 AND t.player_address = $2`,
+      [tournamentId, playerAddress.toLowerCase()]
+    );
+    
+    if (result.rows.length === 0) return null;
+    
+    const row = result.rows[0];
+    return {
+      ...row,
+      rank: Number(row.rank),
+      score: Number(row.score),
+      seed: Number(row.seed),
+      moves: typeof row.moves === 'string' ? JSON.parse(row.moves) : row.moves,
+      moves_used: Number(row.moves_used),
+    };
   },
 };
 

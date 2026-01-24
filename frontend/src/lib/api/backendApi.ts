@@ -103,6 +103,21 @@ export interface BackendStats {
   highestLevel: number;
 }
 
+export interface TournamentLeaderboardEntry {
+  id: number;
+  tournament_id: number;
+  tournament_name: string;
+  player_address: string;
+  username: string;
+  chain_id: string;
+  score: number;
+  seed: number;
+  moves: number[];
+  moves_used: number;
+  submitted_at: string;
+  rank: number;
+}
+
 // =============================================================================
 // API METHODS
 // =============================================================================
@@ -306,6 +321,76 @@ export const backendApi = {
       `/activity/user/${wallet.toLowerCase()}?limit=${limit}`
     );
     return result.activities;
+  },
+
+  // =============================================================================
+  // TOURNAMENT LEADERBOARD METHODS (Backend Indexer)
+  // =============================================================================
+
+  /**
+   * Submit a tournament entry to the backend indexer.
+   * NOTE: The score is NOT calculated by the backend - it is provided by the on-chain contract.
+   * The backend only INDEXES the submission for global leaderboard display.
+   * Verification is always done on-chain via replay.
+   * 
+   * This also awards XP and coins to the player and logs the activity.
+   */
+  async submitTournamentEntry(entry: {
+    tournament_id: number;
+    tournament_name: string;
+    player_address: string;
+    username: string;
+    chain_id: string;
+    score: number;
+    seed: number;
+    moves: number[];
+    moves_used: number;
+    xp_earned?: number;
+    coins_earned?: number;
+  }): Promise<{ 
+    success: boolean; 
+    entry: TournamentLeaderboardEntry; 
+    message: string;
+    rewards_awarded: boolean;
+    xp_earned: number;
+    coins_earned: number;
+    new_total_xp: number;
+  }> {
+    return post('/tournament/submit', entry);
+  },
+
+  /**
+   * Get tournament leaderboard from the backend indexer.
+   * This is the aggregated global leaderboard across all player chains.
+   */
+  async getTournamentLeaderboard(
+    tournamentId: number,
+    limit: number = 100
+  ): Promise<TournamentLeaderboardEntry[]> {
+    const result = await get<{ 
+      tournament_id: number;
+      total_entries: number;
+      leaderboard: TournamentLeaderboardEntry[];
+    }>(`/tournament/${tournamentId}/leaderboard?limit=${limit}`);
+    return result.leaderboard;
+  },
+
+  /**
+   * Get a specific player's tournament entry with their rank.
+   */
+  async getPlayerTournamentEntry(
+    tournamentId: number,
+    playerAddress: string
+  ): Promise<TournamentLeaderboardEntry | null> {
+    try {
+      const result = await get<{
+        tournament_id: number;
+        entry: TournamentLeaderboardEntry;
+      }>(`/tournament/${tournamentId}/player/${playerAddress.toLowerCase()}`);
+      return result.entry;
+    } catch {
+      return null;
+    }
   },
 
   // =============================================================================

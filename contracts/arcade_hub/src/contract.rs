@@ -16,7 +16,11 @@ use arcade_hub::{
     DailyBonusResponse, CryptoRoundCreatedResponse, CryptoPredictionResponse,
     CryptoRoundResolvedResponse, WorldEventCreatedResponse, EventPredictionResponse,
     WorldEventResolvedResponse, MultiplayerRoomCreatedResponse, MultiplayerRoomJoinedResponse,
-    MoveMadeResponse, GameEndedResponse,
+    MoveMadeResponse, GameEndedResponse, LeaderboardRequestedResponse, CachedLeaderboard,
+    // Tournament On-Chain Game types
+    ChainReactionGame, ChainReactionGameStatus, ChainReactionTournament,
+    TournamentLeaderboardEntry, TournamentCreatedResponse, TournamentGameStartedResponse,
+    TournamentMoveResponse, TournamentEndedResponse,
 };
 use linera_sdk::{
     linera_base_types::{AccountOwner, ChainId, WithContractAbi},
@@ -70,6 +74,34 @@ impl Contract for ArcadeHubContract {
         self.state.normalization_factor.set(10);
         // Initialize event counter
         self.state.arcade_event_counter.set(0);
+        
+        // =======================================================================
+        // CREATE GLOBAL 30-DAY TOURNAMENT AT DEPLOY TIME
+        // - ONE tournament, created once
+        // - Same startTime/endTime for ALL users
+        // - Countdown = endTime - now (identical for everyone)
+        // =======================================================================
+        let timestamp = self.runtime.system_time().micros();
+        
+        // Tournament ID = 1 (first and only)
+        self.state.tournament_counter.set(1);
+        
+        // Seed derived from deployment timestamp (deterministic)
+        let seed = timestamp / 1_000_000; // Seconds since epoch
+        
+        // Duration: 30 days in seconds
+        let duration_secs: u64 = 30 * 24 * 60 * 60; // 2,592,000 seconds
+        
+        let tournament = ChainReactionTournament::new(
+            1, // tournament_id
+            "Chain Reaction Championship".to_string(),
+            seed,
+            timestamp, // startTime = deployment time
+            duration_secs,
+            0, // unlimited attempts
+        );
+        
+        self.state.active_tournament.set(Some(tournament));
     }
 
     async fn execute_operation(&mut self, operation: Self::Operation) -> Self::Response {
@@ -166,6 +198,41 @@ impl Contract for ArcadeHubContract {
             Operation::ClearRoom => {
                 self.handle_clear_room(owner).await
             }
+
+            // ========== TOURNAMENT ON-CHAIN GAMES (Chain Reaction) ==========
+            // 
+            // MICROCHAIN EXECUTION:
+            // - Each move runs on player's own microchain
+            // - No backend mediation, no optimistic UI
+            // - Mutation → block confirmation → query → render
+            // ==========================================================
+            Operation::CreateChainReactionTournament {
+                name,
+                seed,
+                duration_secs,
+                max_attempts,
+            } => {
+                self.handle_create_tournament(name, seed, duration_secs, max_attempts).await
+            }
+            Operation::StartTournamentGame => {
+                self.handle_start_tournament_game(owner).await
+            }
+            Operation::TournamentMove { position } => {
+                self.handle_tournament_move(owner, position).await
+            }
+            Operation::ForfeitTournamentGame => {
+                self.handle_forfeit_tournament_game(owner).await
+            }
+            Operation::EndChainReactionTournament => {
+                self.handle_end_tournament().await
+            }
+            Operation::RequestLeaderboard { limit } => {
+                // LINERA CROSS-CHAIN PATTERN:
+                // 1. Player calls this on THEIR chain
+                // 2. Send LeaderboardRequest message to hub
+                // 3. Hub will process inbox (receives all scores) and respond
+                self.handle_request_leaderboard(limit.unwrap_or(100)).await
+            }
         }
     }
 
@@ -225,6 +292,37 @@ impl Contract for ArcadeHubContract {
             Message::RewardSync { player_wallet, xp_earned, coins_earned, is_winner: _, game_type: _ } => {
                 // Apply rewards to local player data
                 self.apply_rewards_to_player(&player_wallet, xp_earned, coins_earned).await;
+            }
+            
+            // ========== TOURNAMENT CROSS-CHAIN MESSAGES ==========
+            Message::TournamentScoreSync { entry } => {
+                // Hub chain receives tournament scores from all player chains
+                // Add to hub's leaderboard so it's globally visible
+                self.state.tournament_leaderboard.push(entry.clone());
+                
+                // Update tournament stats on hub
+                if let Some(tournament) = self.state.active_tournament.get().as_ref() {
+                    let mut updated = tournament.clone();
+                    updated.total_submissions += 1;
+                    if entry.score > updated.top_score {
+                        updated.top_score = entry.score;
+                        updated.top_scorer = entry.username.clone();
+                    }
+                    self.state.active_tournament.set(Some(updated));
+                }
+            }
+            
+            Message::LeaderboardRequest { requester_chain, limit } => {
+                // Hub receives leaderboard request from player chain
+                // By the time we get here, inbox has been processed (all scores applied)
+                // Now build and send leaderboard back to requester
+                self.handle_leaderboard_request(requester_chain, limit).await;
+            }
+            
+            Message::LeaderboardResponse { entries, tournament_id, tournament_name, total_entries, time_remaining, is_active } => {
+                // Player chain receives leaderboard from hub
+                // Store it locally so queries can access it
+                self.handle_leaderboard_response(entries, tournament_id, tournament_name, total_entries, time_remaining, is_active).await;
             }
         }
     }
@@ -1685,5 +1783,514 @@ impl ArcadeHubContract {
             timestamp,
         };
         self.state.recent_games.push(detailed_event);
+    }
+
+    // ========================================================================
+    // TOURNAMENT ON-CHAIN GAMES - Chain Reaction
+    // ========================================================================
+    //
+    // DESIGN PHILOSOPHY:
+    // - Every move is on-chain, executed on player's microchain
+    // - Auto-signer for UX, wallet address for identity
+    // - Tournament-first: Fixed seeds, weekly challenges, competitive leaderboard
+    // - Anti-cheat: All randomness on-chain, moves are replayable
+    // - Rewards are SECONDARY to rank (XP/coins capped, non-farmable)
+    //
+    // XP & COIN REWARDS:
+    // - MUST NOT out-earn multiplayer or prediction markets
+    // - XP capped at 50 per game (vs 80-150 for multiplayer)
+    // - Coins capped at 30 per game (vs 60-100 for multiplayer)
+    // - PRIMARY reward is RANK and REPUTATION on leaderboard
+    // ========================================================================
+
+    /// Create a new Chain Reaction tournament (admin operation).
+    async fn handle_create_tournament(
+        &mut self,
+        name: String,
+        seed: u64,
+        duration_secs: u64,
+        max_attempts: u32,
+    ) -> ArcadeResponse {
+        let timestamp = self.runtime.system_time().micros();
+        
+        // Generate tournament ID
+        let tournament_id = {
+            let current = *self.state.tournament_counter.get();
+            self.state.tournament_counter.set(current + 1);
+            current + 1
+        };
+
+        let tournament = ChainReactionTournament::new(
+            tournament_id,
+            name.clone(),
+            seed,
+            timestamp,
+            duration_secs,
+            max_attempts,
+        );
+
+        self.state.active_tournament.set(Some(tournament));
+
+        ArcadeResponse::TournamentCreated(TournamentCreatedResponse {
+            success: true,
+            tournament_id,
+            name,
+            seed,
+            end_time: timestamp + duration_secs * 1_000_000,
+        })
+    }
+
+    /// Ensure a global tournament exists with FIXED deterministic parameters.
+    /// This creates IDENTICAL tournament on every chain that needs it.
+    /// 
+    /// CRITICAL: All values are CONSTANTS so every chain gets the same tournament.
+    fn ensure_global_tournament(&mut self) -> ChainReactionTournament {
+        // Return existing tournament if present
+        if let Some(existing) = self.state.active_tournament.get() {
+            return existing.clone();
+        }
+        
+        // FIXED CONSTANTS - same for ALL chains, ALL users
+        // Tournament #1: January 2026 Championship
+        const TOURNAMENT_ID: u64 = 1;
+        const TOURNAMENT_SEED: u64 = 20260124; // Date-based seed
+        // January 23, 2026 00:00:00 UTC in microseconds (so tournament is already started)
+        // 1769126400 seconds since Unix epoch = Jan 23, 2026
+        const START_TIME: u64 = 1769126400_000_000;
+        const DURATION_SECS: u64 = 31 * 24 * 60 * 60; // 31 days (ends Feb 23)
+        
+        let tournament = ChainReactionTournament::new(
+            TOURNAMENT_ID,
+            "January 2026 Championship".to_string(),
+            TOURNAMENT_SEED,
+            START_TIME,
+            DURATION_SECS,
+            0, // unlimited attempts
+        );
+        
+        self.state.active_tournament.set(Some(tournament.clone()));
+        self.state.tournament_counter.set(1);
+        
+        tournament
+    }
+
+    /// Start a tournament game for a player.
+    /// Auto-ensures global tournament exists with fixed parameters.
+    async fn handle_start_tournament_game(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        // Check player is registered
+        let _player = match self.state.players.get(&owner).await {
+            Ok(Some(p)) => p,
+            _ => return ArcadeError::PlayerNotRegistered.into_response(),
+        };
+
+        // Ensure global tournament exists (creates with FIXED params if needed)
+        let tournament = self.ensure_global_tournament();
+
+        let timestamp = self.runtime.system_time().micros();
+
+        // Check tournament is still accepting games
+        if !tournament.is_accepting(timestamp) {
+            return ArcadeError::TournamentEnded.into_response();
+        }
+
+        // Check if player already has an active game
+        if let Ok(Some(existing)) = self.state.player_tournament_games.get(&owner).await {
+            if existing.status == ChainReactionGameStatus::InProgress {
+                return ArcadeError::TournamentGameInProgress.into_response();
+            }
+        }
+
+        // Check attempt limit if configured
+        if tournament.max_attempts > 0 {
+            let attempts = self.state.player_tournament_attempts.get(&owner).await.unwrap_or(None).unwrap_or(0);
+            if attempts >= tournament.max_attempts {
+                return ArcadeError::AlreadySubmittedToTournament.into_response();
+            }
+        }
+
+        // Derive seed from tournament seed + player address for slight variation
+        // but still deterministic and verifiable
+        let _player_seed = {
+            let owner_bytes = format!("{:?}", owner);
+            let mut hasher = tournament.seed;
+            for byte in owner_bytes.bytes() {
+                hasher = hasher.wrapping_mul(31).wrapping_add(byte as u64);
+            }
+            hasher
+        };
+
+        // For tournament mode, we use the FIXED tournament seed
+        // Everyone plays the EXACT same grid
+        let game = ChainReactionGame::new(tournament.seed, tournament.id, timestamp);
+
+        // Store game for player (use same pattern as player registration)
+        self.state
+            .player_tournament_games
+            .insert(&owner, game.clone())
+            .expect("Failed to insert tournament game");
+
+        let time_remaining = tournament.time_remaining(timestamp);
+
+        ArcadeResponse::TournamentGameStarted(TournamentGameStartedResponse {
+            success: true,
+            seed: tournament.seed,
+            grid: game.grid,
+            tournament_name: tournament.name,
+            time_remaining,
+        })
+    }
+
+    /// Process a tournament move.
+    /// 
+    /// CRITICAL: This runs entirely on-chain. No client-side authority.
+    /// The move is recorded and chain reactions computed deterministically.
+    async fn handle_tournament_move(&mut self, owner: AccountOwner, position: u8) -> ArcadeResponse {
+        // Get player's active game
+        let mut game = match self.state.player_tournament_games.get(&owner).await {
+            Ok(Some(g)) if g.status == ChainReactionGameStatus::InProgress => g,
+            _ => return ArcadeError::NoActiveTournamentGame.into_response(),
+        };
+
+        // Validate position
+        if position >= 36 {
+            return ArcadeError::InvalidGridPosition.into_response();
+        }
+
+        // Process move (deterministic chain reaction)
+        let (cells_cleared, chain_length) = match game.make_move(position) {
+            Some(result) => result,
+            None => return ArcadeError::InvalidMove.into_response(),
+        };
+
+        let moves_remaining = game.max_moves - game.moves_used;
+        let game_ended = game.status != ChainReactionGameStatus::InProgress;
+
+        // Calculate rewards ONLY if game ended
+        let (xp_earned, coins_earned, rank) = if game_ended {
+            let timestamp = self.runtime.system_time().micros();
+            game.ended_at = timestamp;
+            
+            // Finalize and get rewards
+            let (xp, coins, rank) = self.finalize_tournament_game(&owner, &game).await;
+            (Some(xp), Some(coins), rank)
+        } else {
+            (None, None, None)
+        };
+
+        // Save updated game state
+        let _ = self.state.player_tournament_games.insert(&owner, game.clone());
+
+        ArcadeResponse::TournamentMoveProcessed(TournamentMoveResponse {
+            success: true,
+            grid: game.grid,
+            score: game.score,
+            cells_cleared,
+            chain_length,
+            moves_remaining,
+            status: game.status,
+            xp_earned,
+            coins_earned,
+            rank,
+        })
+    }
+
+    /// Finalize a tournament game and update leaderboard.
+    /// Returns (xp_earned, coins_earned, submission_number).
+    /// 
+    /// RANK-FIRST DESIGN:
+    /// - Primary reward: Leaderboard position (rank computed at query time)
+    /// - XP: Minimal, capped at 25 (participation only)
+    /// - Coins: Minimal, capped at 20 (participation only)
+    /// - Final rewards distributed when tournament ends based on rank
+    async fn finalize_tournament_game(
+        &mut self,
+        owner: &AccountOwner,
+        game: &ChainReactionGame,
+    ) -> (u64, u64, Option<u32>) {
+        let timestamp = self.runtime.system_time().micros();
+
+        // Get player username
+        let username = match self.state.players.get(owner).await {
+            Ok(Some(p)) => p.username,
+            _ => "Unknown".to_string(),
+        };
+
+        // Get tournament ID
+        let tournament_id = self.state.active_tournament.get().as_ref()
+            .map(|t| t.id)
+            .unwrap_or(0);
+
+        // Get attempt count
+        let attempts = self.state.player_tournament_attempts.get(owner).await
+            .unwrap_or(None)
+            .unwrap_or(0);
+        let new_attempts = attempts + 1;
+
+        // Create leaderboard entry (rank=0, computed at query time)
+        let entry = TournamentLeaderboardEntry {
+            tournament_id,
+            player: owner.clone(),
+            username: username.clone(),
+            score: game.score,
+            best_chain: game.best_chain,
+            moves_used: game.moves_used,
+            moves: game.move_history.clone(),
+            seed: game.seed,
+            submitted_at: timestamp,
+            rank: 0, // Computed at query time, not on write
+            attempts: new_attempts,
+        };
+
+        // Update attempt count
+        self.state
+            .player_tournament_attempts
+            .insert(owner, new_attempts)
+            .expect("Failed to insert tournament attempts");
+
+        // Add to local leaderboard
+        self.state.tournament_leaderboard.push(entry.clone());
+
+        // ========== SYNC TO HUB CHAIN ==========
+        // Send tournament score to hub chain so leaderboard is GLOBAL
+        // All users query the hub chain to see everyone's scores
+        if let Some(hub_chain_id) = self.state.hub_chain_id.get() {
+            let hub = *hub_chain_id;
+            let my_chain = self.runtime.chain_id();
+            if my_chain != hub {
+                let msg = Message::TournamentScoreSync { entry: entry.clone() };
+                self.runtime.prepare_message(msg).with_authentication().send_to(hub);
+            }
+        }
+
+        // Update tournament stats
+        if let Some(tournament) = self.state.active_tournament.get().as_ref() {
+            let mut updated = tournament.clone();
+            updated.total_submissions += 1;
+            if game.score > updated.top_score {
+                updated.top_score = game.score;
+                updated.top_scorer = username.clone();
+            }
+            self.state.active_tournament.set(Some(updated));
+        }
+
+        // ========== MINIMAL XP/COINS (PARTICIPATION ONLY) ==========
+        // XP: 20 base + 5 for perfect clear = max 25
+        // Coins: 15 base + 5 for perfect clear = max 20
+        // REAL rewards come from final rank when tournament ends
+        let perfect_bonus: u64 = if game.status == ChainReactionGameStatus::PerfectClear { 5 } else { 0 };
+        let xp_earned = 20 + perfect_bonus;
+        let coins_earned = 15 + perfect_bonus;
+
+        // Update player stats
+        if let Ok(Some(mut player)) = self.state.players.get(owner).await {
+            player.tournament_submissions += 1;
+            player.add_xp(xp_earned);
+            player.coins = player.coins.saturating_add(coins_earned);
+            let _ = self.state.players.insert(owner, player);
+        }
+
+        // Update total tournament games
+        let total = *self.state.total_tournament_games.get();
+        self.state.total_tournament_games.set(total + 1);
+
+        // Return submission number as placeholder (rank computed later)
+        let submission_number = self.state.tournament_leaderboard.count() as u32;
+        (xp_earned, coins_earned, Some(submission_number))
+    }
+
+    /// Forfeit the current tournament game attempt.
+    async fn handle_forfeit_tournament_game(&mut self, owner: AccountOwner) -> ArcadeResponse {
+        // Get player's active game
+        let mut game = match self.state.player_tournament_games.get(&owner).await {
+            Ok(Some(g)) if g.status == ChainReactionGameStatus::InProgress => g,
+            _ => return ArcadeError::NoActiveTournamentGame.into_response(),
+        };
+
+        game.status = ChainReactionGameStatus::Forfeited;
+        game.ended_at = self.runtime.system_time().micros();
+
+        let _ = self.state.player_tournament_games.insert(&owner, game.clone());
+
+        // No rewards for forfeit
+        ArcadeResponse::TournamentMoveProcessed(TournamentMoveResponse {
+            success: true,
+            grid: game.grid,
+            score: game.score,
+            cells_cleared: 0,
+            chain_length: 0,
+            moves_remaining: 0,
+            status: game.status,
+            xp_earned: Some(0),
+            coins_earned: Some(0),
+            rank: None,
+        })
+    }
+
+    /// End the current tournament (admin operation).
+    async fn handle_end_tournament(&mut self) -> ArcadeResponse {
+        let tournament = match self.state.active_tournament.get().as_ref() {
+            Some(t) => t.clone(),
+            None => return ArcadeError::NoActiveTournament.into_response(),
+        };
+
+        // Archive tournament
+        let mut archived = tournament.clone();
+        archived.is_active = false;
+        self.state.past_tournaments.push(archived);
+
+        // Clear active tournament
+        self.state.active_tournament.set(None);
+
+        ArcadeResponse::TournamentEnded(TournamentEndedResponse {
+            success: true,
+            tournament_id: tournament.id,
+            total_submissions: tournament.total_submissions,
+            winner_username: tournament.top_scorer,
+            winning_score: tournament.top_score,
+        })
+    }
+
+    /// Get the tournament leaderboard via mutation.
+    /// 
+    /// LINERA ARCHITECTURE - CRITICAL:
+    /// This is a MUTATION, not a query. By the time this executes:
+    /// 1. Linera has processed all pending inbox messages
+    /// 2. All TournamentScoreSync messages have been applied
+    /// 3. tournament_leaderboard contains all submitted scores
+    /// Request leaderboard from hub chain (called on player's own chain).
+    /// Sends a cross-chain message to hub requesting the leaderboard.
+    async fn handle_request_leaderboard(&mut self, limit: u32) -> ArcadeResponse {
+        let my_chain = self.runtime.chain_id();
+        let hub_chain = self.state.hub_chain_id.get().clone();
+        
+        match hub_chain {
+            Some(hub) if hub != my_chain => {
+                // Send request to hub chain
+                let msg = Message::LeaderboardRequest {
+                    requester_chain: my_chain,
+                    limit,
+                };
+                self.runtime.prepare_message(msg).with_authentication().send_to(hub);
+                
+                ArcadeResponse::LeaderboardRequested(LeaderboardRequestedResponse {
+                    success: true,
+                    message: "Leaderboard request sent to hub. Query cachedLeaderboard for results.".to_string(),
+                })
+            }
+            _ => {
+                // We ARE the hub - build leaderboard directly
+                // (Inbox has been processed by the time we get here)
+                let entries = self.build_leaderboard(limit as usize).await;
+                let tournament = self.get_active_tournament();
+                let now = self.runtime.system_time().micros();
+                let time_remaining = tournament.end_time.saturating_sub(now);
+                
+                // Store in cache for query access
+                let cached = CachedLeaderboard {
+                    entries: entries.clone(),
+                    tournament_id: tournament.id,
+                    tournament_name: tournament.name.clone(),
+                    total_entries: entries.len() as u64,
+                    time_remaining,
+                    is_active: tournament.is_active && time_remaining > 0,
+                    updated_at: now,
+                };
+                self.state.cached_leaderboard.set(Some(cached));
+                
+                ArcadeResponse::LeaderboardRequested(LeaderboardRequestedResponse {
+                    success: true,
+                    message: "Leaderboard built (hub chain). Query cachedLeaderboard.".to_string(),
+                })
+            }
+        }
+    }
+    
+    /// Handle leaderboard request from a player chain (runs on hub chain).
+    /// Builds the leaderboard and sends it back to the requester.
+    async fn handle_leaderboard_request(&mut self, requester_chain: ChainId, limit: u32) {
+        // Build leaderboard (inbox has already been processed)
+        let entries = self.build_leaderboard(limit as usize).await;
+        let tournament = self.get_active_tournament();
+        let now = self.runtime.system_time().micros();
+        let time_remaining = tournament.end_time.saturating_sub(now);
+        
+        // Send response back to requester
+        let msg = Message::LeaderboardResponse {
+            entries,
+            tournament_id: tournament.id,
+            tournament_name: tournament.name.clone(),
+            total_entries: self.state.tournament_leaderboard.count() as u64,
+            time_remaining,
+            is_active: tournament.is_active && time_remaining > 0,
+        };
+        self.runtime.prepare_message(msg).with_authentication().send_to(requester_chain);
+    }
+    
+    /// Handle leaderboard response from hub (runs on player's chain).
+    /// Stores the received leaderboard in local cache for queries.
+    async fn handle_leaderboard_response(
+        &mut self,
+        entries: Vec<TournamentLeaderboardEntry>,
+        tournament_id: u64,
+        tournament_name: String,
+        total_entries: u64,
+        time_remaining: u64,
+        is_active: bool,
+    ) {
+        let now = self.runtime.system_time().micros();
+        let cached = CachedLeaderboard {
+            entries,
+            tournament_id,
+            tournament_name,
+            total_entries,
+            time_remaining,
+            is_active,
+            updated_at: now,
+        };
+        self.state.cached_leaderboard.set(Some(cached));
+    }
+    
+    /// Build the leaderboard from tournament_leaderboard entries.
+    async fn build_leaderboard(&self, limit: usize) -> Vec<TournamentLeaderboardEntry> {
+        let tournament = self.get_active_tournament();
+        let count = self.state.tournament_leaderboard.count();
+        let mut entries = Vec::new();
+        
+        for i in 0..count {
+            if let Ok(Some(entry)) = self.state.tournament_leaderboard.get(i).await {
+                if entry.tournament_id == tournament.id {
+                    entries.push(entry);
+                }
+            }
+        }
+        
+        // Sort by score descending
+        entries.sort_by(|a, b| b.score.cmp(&a.score));
+        
+        // Assign ranks
+        for (i, entry) in entries.iter_mut().enumerate() {
+            entry.rank = (i + 1) as u32;
+        }
+        
+        entries.truncate(limit);
+        entries
+    }
+    
+    /// Get the active tournament or a fallback default.
+    fn get_active_tournament(&self) -> ChainReactionTournament {
+        self.state.active_tournament.get().clone().unwrap_or_else(|| {
+            const TOURNAMENT_ID: u64 = 1;
+            const TOURNAMENT_SEED: u64 = 20260124;
+            const START_TIME: u64 = 1769126400_000_000;
+            const DURATION_SECS: u64 = 31 * 24 * 60 * 60;
+            ChainReactionTournament::new(
+                TOURNAMENT_ID,
+                "January 2026 Championship".to_string(),
+                TOURNAMENT_SEED,
+                START_TIME,
+                DURATION_SECS,
+                0,
+            )
+        })
     }
 }

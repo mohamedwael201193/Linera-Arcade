@@ -166,6 +166,33 @@ const migrations = [
       -- Index for efficient lookups by onchain_round_id
       CREATE INDEX IF NOT EXISTS idx_crypto_rounds_onchain ON crypto_rounds(onchain_round_id);
     `
+  },
+  {
+    name: '010_create_tournament_leaderboard',
+    sql: `
+      -- Tournament leaderboard table for storing verified on-chain submissions
+      CREATE TABLE IF NOT EXISTS tournament_leaderboard (
+        id SERIAL PRIMARY KEY,
+        tournament_id INTEGER NOT NULL,
+        tournament_name VARCHAR(200) NOT NULL,
+        player_address VARCHAR(66) NOT NULL,
+        username VARCHAR(100) NOT NULL,
+        chain_id VARCHAR(66) NOT NULL,
+        score BIGINT NOT NULL,
+        seed BIGINT NOT NULL,
+        moves JSONB NOT NULL DEFAULT '[]',
+        moves_used INTEGER NOT NULL DEFAULT 0,
+        submitted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        
+        -- Unique constraint: one entry per player per tournament
+        CONSTRAINT unique_player_tournament UNIQUE (tournament_id, player_address)
+      );
+      
+      -- Index for efficient leaderboard queries
+      CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_tournament ON tournament_leaderboard(tournament_id);
+      CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_score ON tournament_leaderboard(score DESC);
+      CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_player ON tournament_leaderboard(player_address);
+    `
   }
 ];
 

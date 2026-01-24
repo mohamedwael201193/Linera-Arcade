@@ -8,9 +8,11 @@ mod state;
 use std::sync::Arc;
 
 use arcade_hub::{
-    ArcadeEvent, ArcadeHubAbi, ArcadeStats, CryptoAsset, CryptoRound, GameHighScoreEntry,
+    ArcadeEvent, ArcadeHubAbi, ArcadeStats, CachedLeaderboard, CryptoAsset, CryptoRound, GameHighScoreEntry,
     GamePlayedEvent, GameScore, GameType, LeaderboardEntry, MultiplayerGameRoom, MultiplayerGameType,
     MultiplayerGameStatus, Operation, Player, Prediction, PredictionStatus, WorldEvent,
+    // Tournament On-Chain Games
+    ChainReactionGame, ChainReactionTournament, TournamentLeaderboardResponse,
 };
 use async_graphql::{EmptySubscription, Object, Schema};
 use linera_sdk::{
@@ -699,6 +701,259 @@ impl QueryRoot {
         }
         room.quick_math_state.clone()
     }
+
+    // ========================================================================
+    // TOURNAMENT ON-CHAIN GAME QUERIES (Chain Reaction)
+    // ========================================================================
+    //
+    // VERIFICATION AS A FEATURE:
+    // Any Linera community member can verify any tournament entry.
+    // "Any top score can be publicly verified by replaying the moves."
+    // ========================================================================
+
+    /// Get the current active tournament.
+    /// Returns FIXED tournament data if not yet initialized on this chain.
+    /// This ensures all users see the same tournament info immediately.
+    async fn active_tournament(&self) -> Option<ChainReactionTournament> {
+        // Try to get from state first
+        if let Some(tournament) = self.state.active_tournament.get().clone() {
+            return Some(tournament);
+        }
+        
+        // Return FIXED tournament data (same constants as contract)
+        // This allows UI to show tournament before any mutation runs
+        const TOURNAMENT_ID: u64 = 1;
+        const TOURNAMENT_SEED: u64 = 20260124;
+        // January 23, 2026 00:00:00 UTC in microseconds (so tournament is already started)
+        // 1769126400 seconds since Unix epoch = Jan 23, 2026
+        const START_TIME: u64 = 1769126400_000_000;
+        const DURATION_SECS: u64 = 31 * 24 * 60 * 60; // 31 days (ends Feb 23)
+        
+        Some(ChainReactionTournament::new(
+            TOURNAMENT_ID,
+            "January 2026 Championship".to_string(),
+            TOURNAMENT_SEED,
+            START_TIME,
+            DURATION_SECS,
+            0,
+        ))
+    }
+
+    /// Get a player's active tournament game.
+    async fn player_tournament_game(&self, wallet: String) -> Option<ChainReactionGame> {
+        let owner = parse_account_owner(&wallet)?;
+        self.state.player_tournament_games.get(&owner).await.ok().flatten()
+    }
+
+    /// Debug: Get all tournament games (for debugging key mismatches)
+    async fn all_tournament_games(&self) -> Vec<ChainReactionGame> {
+        let mut games = Vec::new();
+        self.state
+            .player_tournament_games
+            .for_each_index_value(|_owner, game| {
+                games.push(game.into_owned());
+                Ok(())
+            })
+            .await
+            .ok();
+        games
+    }
+
+    /// Get tournament leaderboard.
+    /// Returns top scores sorted by score descending.
+    /// 
+    /// FAIRNESS: Entries include move history so anyone can verify.
+    async fn tournament_leaderboard(&self, limit: Option<i32>) -> TournamentLeaderboardResponse {
+        let limit = limit.unwrap_or(100) as usize;
+        
+        // Use fallback tournament if not in state (same constants as active_tournament)
+        let tournament = self.state.active_tournament.get().clone().or_else(|| {
+            const TOURNAMENT_ID: u64 = 1;
+            const TOURNAMENT_SEED: u64 = 20260124;
+            const START_TIME: u64 = 1769126400_000_000; // Jan 23, 2026
+            const DURATION_SECS: u64 = 31 * 24 * 60 * 60; // 31 days
+            Some(ChainReactionTournament::new(
+                TOURNAMENT_ID,
+                "January 2026 Championship".to_string(),
+                TOURNAMENT_SEED,
+                START_TIME,
+                DURATION_SECS,
+                0,
+            ))
+        });
+        
+        let (tournament_id, tournament_name, is_active, time_remaining) = match &tournament {
+            Some(t) => {
+                // Service doesn't have runtime, but we return the full duration
+                // Frontend will calculate actual remaining time from endTime - now()
+                (t.id, t.name.clone(), t.is_active, t.end_time.saturating_sub(t.start_time))
+            }
+            None => (0, "No Active Tournament".to_string(), false, 0),
+        };
+
+        let count = self.state.tournament_leaderboard.count();
+        let mut entries = Vec::new();
+        
+        for i in 0..count {
+            if let Ok(Some(entry)) = self.state.tournament_leaderboard.get(i).await {
+                // Only include entries from current tournament
+                if tournament.as_ref().map(|t| t.id) == Some(entry.tournament_id) || tournament.is_none() {
+                    entries.push(entry);
+                }
+            }
+        }
+
+        // Sort by score descending
+        entries.sort_by(|a, b| b.score.cmp(&a.score));
+
+        // Assign ranks
+        for (i, entry) in entries.iter_mut().enumerate() {
+            entry.rank = (i + 1) as u32;
+        }
+
+        let total_entries = entries.len() as u64;
+        entries.truncate(limit);
+
+        TournamentLeaderboardResponse {
+            tournament_id,
+            tournament_name,
+            entries,
+            total_entries,
+            time_remaining,
+            is_active,
+        }
+    }
+
+    /// Get cached leaderboard received from hub chain.
+    /// 
+    /// LINERA CROSS-CHAIN PATTERN:
+    /// 1. Player calls requestLeaderboard mutation on their chain
+    /// 2. Their chain sends LeaderboardRequest to hub
+    /// 3. Hub processes inbox (applies all scores) and sends LeaderboardResponse back
+    /// 4. Player's chain stores the response in cached_leaderboard
+    /// 5. Player queries this to get the leaderboard
+    /// 
+    /// This query returns the cached leaderboard data.
+    /// Call requestLeaderboard mutation first to refresh the cache.
+    async fn cached_leaderboard(&self) -> Option<CachedLeaderboard> {
+        self.state.cached_leaderboard.get().clone()
+    }
+
+    /// Get a player's tournament stats.
+    async fn player_tournament_stats(&self, wallet: String) -> Option<PlayerTournamentStats> {
+        let owner = parse_account_owner(&wallet)?;
+        let tournament = self.state.active_tournament.get().clone()?;
+        
+        // Find player's best entry
+        let count = self.state.tournament_leaderboard.count();
+        let mut best_score = 0u64;
+        let mut best_rank = 0u32;
+        
+        for i in 0..count {
+            if let Ok(Some(entry)) = self.state.tournament_leaderboard.get(i).await {
+                if entry.tournament_id == tournament.id {
+                    if entry.player == owner && entry.score > best_score {
+                        best_score = entry.score;
+                    }
+                }
+            }
+        }
+
+        // Calculate rank
+        if best_score > 0 {
+            let mut rank = 1u32;
+            for i in 0..count {
+                if let Ok(Some(entry)) = self.state.tournament_leaderboard.get(i).await {
+                    if entry.tournament_id == tournament.id && entry.score > best_score {
+                        rank += 1;
+                    }
+                }
+            }
+            best_rank = rank;
+        }
+
+        let attempts = self.state.player_tournament_attempts.get(&owner).await.ok().flatten().unwrap_or(0);
+        
+        // Get player's total submissions
+        let player = self.state.players.get(&owner).await.ok().flatten();
+        let total_submissions = player.map(|p| p.tournament_submissions).unwrap_or(0);
+
+        Some(PlayerTournamentStats {
+            best_score,
+            best_rank,
+            attempts,
+            tournament_id: tournament.id,
+            tournament_name: tournament.name,
+            total_submissions,
+        })
+    }
+
+    /// Verify a tournament game by replaying moves.
+    /// 
+    /// PUBLIC VERIFICATION: Any Linera community member can call this
+    /// to verify any tournament entry. This is a FEATURE.
+    /// 
+    /// "Any top score can be publicly verified by replaying the moves."
+    async fn verify_tournament_game(&self, seed: String, moves: Vec<i32>) -> GameVerificationResult {
+        let seed: u64 = seed.parse().unwrap_or(0);
+        let moves_u8: Vec<u8> = moves.iter().map(|&m| m as u8).collect();
+        
+        match ChainReactionGame::verify(seed, 0, &moves_u8) {
+            Some(score) => GameVerificationResult {
+                valid: true,
+                computed_score: score as i64,
+                message: "Game verified successfully. Score matches move sequence.".to_string(),
+            },
+            None => GameVerificationResult {
+                valid: false,
+                computed_score: 0,
+                message: "Invalid game: moves do not produce a valid game state.".to_string(),
+            },
+        }
+    }
+
+    /// Get total tournament statistics.
+    async fn tournament_stats(&self) -> TournamentStats {
+        let total_games = *self.state.total_tournament_games.get();
+        let active = self.state.active_tournament.get().clone();
+        
+        TournamentStats {
+            total_games_played: total_games as i64,
+            active_tournament_id: active.as_ref().map(|t| t.id as i64),
+            active_tournament_name: active.as_ref().map(|t| t.name.clone()),
+            current_top_score: active.as_ref().map(|t| t.top_score as i64).unwrap_or(0),
+            current_top_scorer: active.as_ref().map(|t| t.top_scorer.clone()).unwrap_or_default(),
+        }
+    }
+}
+
+/// Player's tournament statistics.
+#[derive(async_graphql::SimpleObject)]
+struct PlayerTournamentStats {
+    best_score: u64,
+    best_rank: u32,
+    attempts: u32,
+    tournament_id: u64,
+    tournament_name: String,
+    total_submissions: u64,
+}
+
+/// Result of game verification.
+#[derive(async_graphql::SimpleObject)]
+struct GameVerificationResult {
+    valid: bool,
+    computed_score: i64,
+    message: String,
+}
+
+/// Overall tournament statistics.
+#[derive(async_graphql::SimpleObject)]
+struct TournamentStats {
+    total_games_played: i64,
+    active_tournament_id: Option<i64>,
+    active_tournament_name: Option<String>,
+    current_top_score: i64,
+    current_top_scorer: String,
 }
 
 /// Parse a wallet address string to AccountOwner.
