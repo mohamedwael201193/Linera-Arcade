@@ -1255,8 +1255,11 @@ const SubmitTournamentEntrySchema = z.object({
 
 router.post('/tournament/submit', async (req: Request, res: Response) => {
   try {
+    console.log('📥 Tournament submit request:', JSON.stringify(req.body));
+    
     const parsed = SubmitTournamentEntrySchema.safeParse(req.body);
     if (!parsed.success) {
+      console.error('❌ Invalid request body:', parsed.error.errors);
       return res.status(400).json({ 
         error: 'Invalid request body', 
         details: parsed.error.errors 
@@ -1352,7 +1355,7 @@ router.post('/tournament/submit', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error submitting tournament entry:', error);
-    res.status(500).json({ error: 'Failed to submit tournament entry' });
+    res.status(500).json({ error: 'Failed to submit tournament entry', details: String(error) });
   }
 });
 
@@ -1368,7 +1371,12 @@ router.get('/tournament/:tournamentId/leaderboard', async (req: Request, res: Re
     }
 
     const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
-    const leaderboard = await (await ensureDb()).getTournamentLeaderboard(tournamentId, limit);
+    console.log(`📊 Fetching leaderboard for tournament ${tournamentId} with limit ${limit}`);
+    
+    const database = await ensureDb();
+    const leaderboard = await database.getTournamentLeaderboard(tournamentId, limit);
+    
+    console.log(`📊 Found ${leaderboard.length} entries for tournament ${tournamentId}`);
 
     res.json({
       tournament_id: tournamentId,
@@ -1377,7 +1385,7 @@ router.get('/tournament/:tournamentId/leaderboard', async (req: Request, res: Re
     });
   } catch (error) {
     console.error('Error fetching tournament leaderboard:', error);
-    res.status(500).json({ error: 'Failed to fetch tournament leaderboard' });
+    res.status(500).json({ error: 'Failed to fetch tournament leaderboard', details: String(error) });
   }
 });
 

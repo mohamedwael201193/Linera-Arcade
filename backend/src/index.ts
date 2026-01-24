@@ -38,30 +38,10 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 // Parse JSON bodies
 app.use(express.json());
 
-// CORS configuration
-const corsOrigins = process.env.CORS_ORIGINS?.split(',').map(o => o.trim()) || [
-  'http://localhost:3005',
-  'http://localhost:5173'
-];
-
+// CORS configuration - Allow all origins for the arcade API
+// The backend is a read-only indexer, so open access is safe
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    // Check if origin is allowed
-    if (corsOrigins.includes(origin) || corsOrigins.includes('*')) {
-      return callback(null, true);
-    }
-    
-    // In production, be more strict
-    if (process.env.NODE_ENV === 'production') {
-      return callback(new Error('Not allowed by CORS'), false);
-    }
-    
-    // In development, allow all
-    return callback(null, true);
-  },
+  origin: true, // Allow all origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Api-Key']
@@ -196,6 +176,24 @@ httpServer.listen(PORT, async () => {
         `CREATE INDEX IF NOT EXISTS idx_crypto_rounds_onchain ON crypto_rounds(onchain_round_id)`,
         // Migration 010: Set onchain_round_id = id for existing rounds (executor sync fix)
         `UPDATE crypto_rounds SET onchain_round_id = id WHERE onchain_round_id IS NULL`,
+        // Migration 011: Create tournament leaderboard table
+        `CREATE TABLE IF NOT EXISTS tournament_leaderboard (
+          id SERIAL PRIMARY KEY,
+          tournament_id INTEGER NOT NULL,
+          tournament_name VARCHAR(200) NOT NULL,
+          player_address VARCHAR(66) NOT NULL,
+          username VARCHAR(100) NOT NULL,
+          chain_id VARCHAR(66) NOT NULL,
+          score BIGINT NOT NULL,
+          seed BIGINT NOT NULL,
+          moves JSONB NOT NULL DEFAULT '[]',
+          moves_used INTEGER NOT NULL DEFAULT 0,
+          submitted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+          CONSTRAINT unique_player_tournament UNIQUE (tournament_id, player_address)
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_tournament ON tournament_leaderboard(tournament_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_score ON tournament_leaderboard(score DESC)`,
+        `CREATE INDEX IF NOT EXISTS idx_tournament_leaderboard_player ON tournament_leaderboard(player_address)`,
       ];
       
       for (const sql of migrations) {
