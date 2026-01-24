@@ -1310,16 +1310,41 @@ router.post('/tournament/submit', async (req: Request, res: Response) => {
       try {
         // Get or create player
         let player = await database.getPlayerByWallet(player_address);
+        
+        console.log(`🔍 Looking up player: ${player_address}, found: ${player ? 'yes' : 'no'}`);
+        
+        // If player doesn't exist, try to create them
+        if (!player) {
+          console.log(`📝 Creating new player: ${player_address} as ${username}`);
+          try {
+            player = await database.createPlayer({
+              wallet_address: player_address,
+              username: username,
+              chain_id: chain_id
+            });
+            console.log(`✅ Player created: ${player?.wallet_address}`);
+          } catch (createErr) {
+            console.error(`❌ Failed to create player:`, createErr);
+          }
+        }
+        
         if (player) {
           // Update XP
+          console.log(`📊 Updating XP for ${player_address}: +${calculatedXp}`);
           const updatedPlayer = await database.updatePlayerXP(player_address, calculatedXp);
           if (updatedPlayer) {
             newTotalXp = updatedPlayer.total_xp;
+            console.log(`✅ XP updated, new total: ${newTotalXp}`);
+          } else {
+            console.log(`⚠️ updatePlayerXP returned null`);
           }
+          
           // Add coins
+          console.log(`💰 Adding coins for ${player_address}: +${calculatedCoins}`);
           await database.addCoins(player_address, calculatedCoins);
           
           // Log activity
+          console.log(`📝 Logging activity: TOURNAMENT_COMPLETED`);
           await database.logActivity(
             player_address,
             username,
@@ -1336,10 +1361,14 @@ router.post('/tournament/submit', async (req: Request, res: Response) => {
           
           rewardsAwarded = true;
           console.log(`🏆 Tournament completed: ${username} scored ${score} (+${calculatedXp} XP, +${calculatedCoins} coins)`);
+        } else {
+          console.log(`⚠️ Could not find or create player ${player_address}`);
         }
       } catch (err) {
         console.error('Failed to award tournament rewards (non-critical):', err);
       }
+    } else {
+      console.log(`ℹ️ Entry already exists with higher score (${entry.score} > ${score}), not awarding rewards`);
     }
 
     res.status(201).json({

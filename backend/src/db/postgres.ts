@@ -960,8 +960,8 @@ export const postgresDb = {
 
   async addCoins(wallet: string, amount: number): Promise<void> {
     await query(
-      `UPDATE players SET coins = coins + $2 WHERE wallet_address = $1`,
-      [wallet, amount]
+      `UPDATE players SET coins = coins + $2, updated_at = NOW() WHERE wallet_address = $1`,
+      [wallet.toLowerCase(), amount]
     );
   },
 
