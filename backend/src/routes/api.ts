@@ -606,18 +606,21 @@ router.post('/predictions/crypto/rounds', requireApiKey, async (req, res) => {
 });
 
 // Link a DB round to an on-chain round (called by frontend after blockchain creation)
+// CRITICAL: Will REFUSE to re-link if round already has bets or is linked to different on-chain round
 router.post('/predictions/crypto/rounds/link-onchain', requireApiKey, async (req, res) => {
   try {
     const input = LinkOnchainRoundSchema.parse(req.body);
     const db = await ensureDb();
     
-    const success = await db.setOnchainRoundId(input.db_round_id, input.onchain_round_id);
+    const result = await db.setOnchainRoundId(input.db_round_id, input.onchain_round_id);
     
-    if (success) {
+    if (result.success) {
       console.log(`🔗 [API] Linked DB round ${input.db_round_id} → on-chain ${input.onchain_round_id}`);
       res.json({ success: true, message: 'Round linked successfully' });
     } else {
-      res.status(404).json({ success: false, error: 'DB round not found' });
+      // Return the reason why linking failed (already linked, has bets, etc.)
+      console.warn(`⚠️ [API] Failed to link DB round ${input.db_round_id}: ${result.reason}`);
+      res.status(409).json({ success: false, error: result.reason || 'Failed to link round' });
     }
   } catch (error) {
     if (error instanceof z.ZodError) {

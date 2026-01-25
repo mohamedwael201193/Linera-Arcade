@@ -615,6 +615,7 @@ export interface ActivityLogEntry {
 
 export interface CryptoRoundEntry {
   id: number;
+  onchain_round_id?: number | null; // CRITICAL: On-chain round ID for executor resolution
   asset: 'BTC' | 'ETH';
   start_price: number;
   end_price: number | null;

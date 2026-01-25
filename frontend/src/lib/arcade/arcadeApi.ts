@@ -701,8 +701,10 @@ class ArcadeApiClass {
   /**
    * Place a crypto prediction (UP/DOWN)
    * 
-   * FIXED: Now ensures the round exists on-chain before placing bet.
-   * If no round exists for the asset, creates one first.
+   * CRITICAL FIX: 
+   * - If round already has onchain_round_id, use THAT ID (no new round creation)
+   * - If round has bets (total_up or total_down > 0), NEVER create new round
+   * - Only create new on-chain round for fresh rounds without bets
    * 
    * @param roundId - Backend round ID (will find/create matching on-chain round)
    * @param direction - 'UP' or 'DOWN'
@@ -715,7 +717,7 @@ class ArcadeApiClass {
     direction: 'UP' | 'DOWN',
     coinsStaked: number,
     dynamicUsername?: string,
-    backendRound?: { id: number; asset: string; start_price: number; duration_secs?: number }
+    backendRound?: { id: number; asset: string; start_price: number; duration_secs?: number; onchain_round_id?: number | null; total_up?: number; total_down?: number }
   ): Promise<boolean> {
     console.log(`📊 Placing crypto prediction: ${direction} with ${coinsStaked} coins`);
     
@@ -751,118 +753,133 @@ class ArcadeApiClass {
       }
       
       // Step 1: Ensure round exists on-chain
-      // Check for active rounds on blockchain
+      // CRITICAL FIX: If backend round already has onchain_round_id, use it directly
+      // NEVER create a new round if bets already exist
       let onChainRoundId: number | null = null;
       let needsLinking = false; // Track if we need to link on-chain round to backend
       
-      try {
-        const activeRounds = await this.getActiveCryptoRoundsOnChain();
-        console.log(`📋 Active on-chain rounds: ${activeRounds.length}`, activeRounds);
-        
-        // Helper to check if a round is still accepting bets
-        // Contract locks betting 30 seconds before end
-        const isRoundAcceptingBets = (round: { startTime: number; durationSecs: number }) => {
-          const currentTimeMicros = Date.now() * 1000; // Convert JS ms to microseconds
-          const lockTime = round.startTime + (round.durationSecs - 30) * 1_000_000;
-          const isAccepting = currentTimeMicros < lockTime;
-          console.log(`⏱️ Round timing check: current=${currentTimeMicros}, lockTime=${lockTime}, accepting=${isAccepting}`);
-          return isAccepting;
-        };
-        
-        // Try to find a matching round by asset that is STILL ACCEPTING BETS
-        if (backendRound) {
-          const assetUpper = backendRound.asset.toUpperCase();
-          const matchingRound = activeRounds.find(r => {
-            const assetMatch = r.asset.toUpperCase() === assetUpper || 
-                              r.asset.toUpperCase().includes(assetUpper);
-            if (!assetMatch) return false;
-            
-            // Check if round is still accepting bets (not past lock time)
-            return isRoundAcceptingBets(r);
-          });
+      // Check if round is immutable (already has on-chain link or bets)
+      const hasBets = backendRound && ((backendRound.total_up || 0) > 0 || (backendRound.total_down || 0) > 0);
+      const alreadyLinked = backendRound && backendRound.onchain_round_id && backendRound.onchain_round_id > 0;
+      
+      if (alreadyLinked && backendRound.onchain_round_id) {
+        // Round is already linked to an on-chain round - use that directly
+        console.log(`🔒 Round ${backendRound.id} already linked to on-chain round ${backendRound.onchain_round_id}`);
+        onChainRoundId = backendRound.onchain_round_id;
+        needsLinking = false; // Already linked, no need to re-link
+      } else if (hasBets) {
+        // Round has bets but no on-chain link - this is a critical error state
+        console.error(`❌ CRITICAL: Round ${backendRound?.id} has bets but no on-chain_round_id!`);
+        console.error(`   This round may have been corrupted. Cannot safely place bet.`);
+        throw new Error('Round has bets but missing blockchain link - please try a different round');
+      } else {
+        // Round is fresh (no bets, no on-chain link) - proceed with normal flow
+        try {
+          const activeRounds = await this.getActiveCryptoRoundsOnChain();
+          console.log(`📋 Active on-chain rounds: ${activeRounds.length}`, activeRounds);
           
-          if (matchingRound) {
-            console.log(`✅ Found existing on-chain round for ${assetUpper}: ID ${matchingRound.id} (still accepting bets)`);
-            onChainRoundId = matchingRound.id;
-            needsLinking = true; // Need to link existing on-chain round to backend round
-          } else {
-            // Found rounds for asset but they're all past lock time
-            const expiredRound = activeRounds.find(r => 
-              r.asset.toUpperCase() === assetUpper || r.asset.toUpperCase().includes(assetUpper)
-            );
-            if (expiredRound) {
-              console.log(`⚠️ Found round for ${assetUpper} but it's past lock time, will create new one`);
+          // Helper to check if a round is still accepting bets
+          // Contract locks betting 30 seconds before end
+          const isRoundAcceptingBets = (round: { startTime: number; durationSecs: number }) => {
+            const currentTimeMicros = Date.now() * 1000; // Convert JS ms to microseconds
+            const lockTime = round.startTime + (round.durationSecs - 30) * 1_000_000;
+            const isAccepting = currentTimeMicros < lockTime;
+            console.log(`⏱️ Round timing check: current=${currentTimeMicros}, lockTime=${lockTime}, accepting=${isAccepting}`);
+            return isAccepting;
+          };
+          
+          // Try to find a matching round by asset that is STILL ACCEPTING BETS
+          if (backendRound) {
+            const assetUpper = backendRound.asset.toUpperCase();
+            const matchingRound = activeRounds.find(r => {
+              const assetMatch = r.asset.toUpperCase() === assetUpper || 
+                                r.asset.toUpperCase().includes(assetUpper);
+              if (!assetMatch) return false;
+              
+              // Check if round is still accepting bets (not past lock time)
+              return isRoundAcceptingBets(r);
+            });
+            
+            if (matchingRound) {
+              console.log(`✅ Found existing on-chain round for ${assetUpper}: ID ${matchingRound.id} (still accepting bets)`);
+              onChainRoundId = matchingRound.id;
+              needsLinking = true; // Need to link existing on-chain round to backend round
+            } else {
+              // No accepting round found - create a fresh one (safe because no bets exist)
+              console.log(`📝 Creating fresh on-chain round for ${backendRound.asset}...`);
+              const createdId = await this.createCryptoRound(
+                backendRound.asset as 'BTC' | 'ETH',
+                backendRound.start_price,
+                backendRound.duration_secs || 300
+              );
+              
+              if (createdId === null || createdId === undefined) {
+                throw new Error('Failed to create on-chain round');
+              }
+              onChainRoundId = createdId;
+              console.log(`✅ Created on-chain round with ID: ${onChainRoundId}`);
+              needsLinking = true;
+              
+              // Wait for chain to process
+              await new Promise(resolve => setTimeout(resolve, 1000));
             }
           }
-        }
-        
-        // If no matching round found (or existing one is expired), create one
-        if ((onChainRoundId === null || onChainRoundId === undefined) && backendRound) {
-          console.log(`📝 Creating fresh on-chain round for ${backendRound.asset}...`);
-          const createdId = await this.createCryptoRound(
-            backendRound.asset as 'BTC' | 'ETH',
-            backendRound.start_price,
-            backendRound.duration_secs || 300
-          );
           
-          // createCryptoRound now returns 0 as fallback, so check for null/undefined explicitly
-          if (createdId === null || createdId === undefined) {
-            throw new Error('Failed to create on-chain round');
+          // Fallback: use the first active round that's accepting bets
+          if ((onChainRoundId === null || onChainRoundId === undefined) && activeRounds.length > 0) {
+            const acceptingRound = activeRounds.find(r => isRoundAcceptingBets(r));
+            if (acceptingRound) {
+              console.log(`⚠️ Using first available accepting round: ID ${acceptingRound.id}`);
+              onChainRoundId = acceptingRound.id;
+              needsLinking = true;
+            }
           }
-          onChainRoundId = createdId;
-          console.log(`✅ Created on-chain round with ID: ${onChainRoundId}`);
-          needsLinking = true;
-          
-          // Wait for chain to process
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (roundErr) {
+          console.error('⚠️ Could not verify/create on-chain round:', roundErr);
         }
         
-        // Fallback: use the first active round that's accepting bets
-        if ((onChainRoundId === null || onChainRoundId === undefined) && activeRounds.length > 0) {
-          const acceptingRound = activeRounds.find(r => isRoundAcceptingBets(r));
-          if (acceptingRound) {
-            console.log(`⚠️ Using first available accepting round: ID ${acceptingRound.id}`);
-            onChainRoundId = acceptingRound.id;
+        // If we still don't have an on-chain round, we need to create one (only for fresh rounds)
+        if (onChainRoundId === null || onChainRoundId === undefined) {
+          if (backendRound) {
+            console.log(`📝 Creating on-chain round for ${backendRound.asset}...`);
+            const createdId = await this.createCryptoRound(
+              backendRound.asset as 'BTC' | 'ETH',
+              backendRound.start_price,
+              backendRound.duration_secs || 300
+            );
+            
+            if (createdId === null || createdId === undefined) {
+              console.error('❌ Failed to create on-chain round');
+              throw new Error('Cannot place prediction: failed to create on-chain round');
+            }
+            onChainRoundId = createdId;
             needsLinking = true;
+            
+            // Wait for chain to process
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            console.error('❌ No on-chain round available and no backend round data to create one');
+            throw new Error('Cannot place prediction: no round available');
           }
-        }
-      } catch (roundErr) {
-        console.error('⚠️ Could not verify/create on-chain round:', roundErr);
-      }
-      
-      // If we still don't have an on-chain round, we need to create one
-      if (onChainRoundId === null || onChainRoundId === undefined) {
-        if (backendRound) {
-          console.log(`📝 Creating on-chain round for ${backendRound.asset}...`);
-          const createdId = await this.createCryptoRound(
-            backendRound.asset as 'BTC' | 'ETH',
-            backendRound.start_price,
-            backendRound.duration_secs || 300
-          );
-          
-          if (createdId === null || createdId === undefined) {
-            console.error('❌ Failed to create on-chain round');
-            throw new Error('Cannot place prediction: failed to create on-chain round');
-          }
-          onChainRoundId = createdId;
-          needsLinking = true;
-          
-          // Wait for chain to process
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-          console.error('❌ No on-chain round available and no backend round data to create one');
-          throw new Error('Cannot place prediction: no round available');
         }
       }
       
       // CRITICAL: Link the on-chain round ID to the backend round
       // This is required for the executor to know which rounds to resolve
+      // The backend will REFUSE to re-link if bets exist (safety check)
       if (needsLinking && backendRound && onChainRoundId !== null) {
         try {
           await backendApi.linkOnchainRound(backendRound.id, onChainRoundId);
           console.log(`🔗 Linked backend round ${backendRound.id} to on-chain round ${onChainRoundId}`);
-        } catch (linkErr) {
-          console.warn('⚠️ Failed to link on-chain round to backend:', linkErr);
+        } catch (linkErr: unknown) {
+          // Backend may reject linking if round already has bets or different on-chain link
+          const errorMessage = linkErr instanceof Error ? linkErr.message : String(linkErr);
+          if (errorMessage.includes('409') || errorMessage.includes('already linked') || errorMessage.includes('has bets')) {
+            console.log(`⚠️ Backend refused to re-link (expected for safety): ${errorMessage}`);
+            // This is expected behavior - continue with the existing link
+          } else {
+            console.warn('⚠️ Failed to link on-chain round to backend:', linkErr);
+          }
           // Continue anyway - prediction can still work
         }
       }

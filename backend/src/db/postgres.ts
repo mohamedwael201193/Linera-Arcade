@@ -429,12 +429,49 @@ export const postgresDb = {
   },
 
   // Set the on-chain round ID for a backend round
-  async setOnchainRoundId(dbRoundId: number, onchainRoundId: number): Promise<boolean> {
+  // CRITICAL: Only links if NOT already linked AND has no bets (to prevent orphaning bets)
+  async setOnchainRoundId(dbRoundId: number, onchainRoundId: number): Promise<{ success: boolean; reason?: string }> {
+    // Step 1: Check if round exists and its current state
+    const roundResult = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds WHERE id = $1`,
+      [dbRoundId]
+    );
+    const round = roundResult.rows[0];
+    
+    if (!round) {
+      return { success: false, reason: 'Round not found' };
+    }
+    
+    // Step 2: If already linked to a DIFFERENT on-chain round, refuse (prevents orphaning)
+    if (round.onchain_round_id && round.onchain_round_id > 0 && round.onchain_round_id !== onchainRoundId) {
+      console.warn(`⚠️ [setOnchainRoundId] Round ${dbRoundId} already linked to on-chain ${round.onchain_round_id}, refusing to re-link to ${onchainRoundId}`);
+      return { success: false, reason: `Already linked to on-chain round ${round.onchain_round_id}` };
+    }
+    
+    // Step 3: Check if bets exist on this round
+    const betsResult = await query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM predictions WHERE reference_id = $1 AND prediction_type = 'CRYPTO'`,
+      [dbRoundId]
+    );
+    const betCount = parseInt(betsResult.rows[0]?.count || '0', 10);
+    
+    // If bets exist AND we're trying to link to a DIFFERENT round, refuse
+    if (betCount > 0 && round.onchain_round_id && round.onchain_round_id > 0 && round.onchain_round_id !== onchainRoundId) {
+      console.warn(`⚠️ [setOnchainRoundId] Round ${dbRoundId} has ${betCount} bets, refusing to change on-chain link`);
+      return { success: false, reason: `Round has ${betCount} bets, cannot change link` };
+    }
+    
+    // Step 4: Safe to link (either first link, or same ID, or no bets)
     const result = await query(
       `UPDATE crypto_rounds SET onchain_round_id = $2 WHERE id = $1`,
       [dbRoundId, onchainRoundId]
     );
-    return (result.rowCount ?? 0) > 0;
+    
+    if ((result.rowCount ?? 0) > 0) {
+      console.log(`🔗 [setOnchainRoundId] Linked DB round ${dbRoundId} → on-chain ${onchainRoundId}`);
+      return { success: true };
+    }
+    return { success: false, reason: 'Update failed' };
   },
 
   // Cancel unlinked expired rounds (rounds without onchain_round_id that have no bets)

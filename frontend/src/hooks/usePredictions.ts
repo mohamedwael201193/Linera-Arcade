@@ -228,7 +228,10 @@ export function usePredictions(walletAddress: string | null): PredictionState & 
         id: backendRound.id, // CRITICAL: Backend round ID for linking to on-chain round
         asset: backendRound.asset,
         start_price: backendRound.start_price,
-        duration_secs: durationSecs
+        duration_secs: durationSecs,
+        onchain_round_id: backendRound.onchain_round_id, // CRITICAL: Include existing on-chain link
+        total_up: backendRound.total_up, // Include bet counts
+        total_down: backendRound.total_down
       } : undefined;
       
       console.log(`🎰 Placing prediction on round ${roundId}, backend data:`, backendRoundData);
