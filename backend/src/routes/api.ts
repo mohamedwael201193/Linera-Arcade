@@ -139,6 +139,106 @@ router.get('/indexer/status', (_req, res) => {
 });
 
 // =============================================================================
+// LEGACY ROUND RECONCILIATION
+// =============================================================================
+
+/**
+ * Get all legacy stuck rounds that need reconciliation.
+ * These are rounds created before the critical fix that are now orphaned.
+ */
+router.get('/admin/legacy-rounds', requireApiKey, async (_req: Request, res: Response) => {
+  try {
+    const db = await ensureDb();
+    const legacyRounds = await db.getLegacyStuckRounds();
+    
+    res.json({
+      count: legacyRounds.length,
+      rounds: legacyRounds.map((r: { id: number; asset: string; onchain_round_id: number | null; start_price: number; total_up: number; total_down: number; start_time: Date; status: string }) => ({
+        id: r.id,
+        asset: r.asset,
+        onchain_round_id: r.onchain_round_id,
+        start_price: r.start_price,
+        total_bets: r.total_up + r.total_down,
+        start_time: r.start_time,
+        status: r.status,
+      })),
+      message: legacyRounds.length > 0 
+        ? 'Found legacy rounds that need reconciliation' 
+        : 'No legacy rounds found - all clean!'
+    });
+  } catch (error) {
+    console.error('Error getting legacy rounds:', error);
+    res.status(500).json({ error: 'Failed to get legacy rounds' });
+  }
+});
+
+/**
+ * Reconcile all legacy stuck rounds by refunding bets.
+ * This is SAFE because:
+ * - Only affects rounds that are stuck (ACTIVE but expired with bets)
+ * - Refunds all user bets (no user loses money)
+ * - Marks rounds as CANCELLED (clear state)
+ * - Logs all refunds for audit trail
+ */
+router.post('/admin/reconcile-legacy-rounds', requireApiKey, async (_req: Request, res: Response) => {
+  try {
+    const db = await ensureDb();
+    const legacyRounds = await db.getLegacyStuckRounds();
+    
+    if (legacyRounds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No legacy rounds to reconcile',
+        reconciled: 0,
+      });
+    }
+    
+    console.log(`🔄 [RECONCILIATION] Starting reconciliation of ${legacyRounds.length} legacy rounds...`);
+    
+    const results: Array<{
+      roundId: number;
+      asset: string;
+      onchainRoundId: number | null;
+      result: { success: boolean; refundedBets: number; totalRefunded: number; reason: string };
+    }> = [];
+    
+    for (const round of legacyRounds) {
+      const reason = `Legacy round orphaned due to on-chain re-linking bug (pre-fix). Original on-chain round ${round.onchain_round_id} may have been overwritten.`;
+      
+      console.log(`🔄 Reconciling round #${round.id} (${round.asset}, on-chain: ${round.onchain_round_id})...`);
+      
+      const result = await db.reconcileLegacyRoundAsRefunded(round.id, reason);
+      
+      results.push({
+        roundId: round.id,
+        asset: round.asset,
+        onchainRoundId: round.onchain_round_id,
+        result,
+      });
+    }
+    
+    const totalRefunded = results.reduce((sum, r) => sum + r.result.totalRefunded, 0);
+    const totalBets = results.reduce((sum, r) => sum + r.result.refundedBets, 0);
+    
+    console.log(`✅ [RECONCILIATION] Complete: ${results.length} rounds, ${totalBets} bets refunded, ${totalRefunded} coins returned`);
+    
+    res.json({
+      success: true,
+      message: `Reconciled ${results.length} legacy rounds`,
+      summary: {
+        roundsReconciled: results.length,
+        totalBetsRefunded: totalBets,
+        totalCoinsRefunded: totalRefunded,
+      },
+      details: results,
+    });
+  } catch (error) {
+    console.error('Error reconciling legacy rounds:', error);
+    res.status(500).json({ error: 'Failed to reconcile legacy rounds' });
+  }
+});
+
+// =============================================================================
 // INTERNAL ENDPOINTS (Called by Executor)
 // =============================================================================
 

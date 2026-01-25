@@ -88,7 +88,7 @@ export interface ActivityLog {
   id: number;
   wallet_address: string;
   username: string;
-  action: 'GAME_COMPLETED' | 'PREDICTION_PLACED' | 'PREDICTION_WON' | 'PREDICTION_LOST' | 'DAILY_BONUS' | 'REGISTERED' | 'TOURNAMENT_COMPLETED' | 'MULTIPLAYER_WIN' | 'MULTIPLAYER_LOSS';
+  action: 'GAME_COMPLETED' | 'PREDICTION_PLACED' | 'PREDICTION_WON' | 'PREDICTION_LOST' | 'PREDICTION_REFUNDED' | 'DAILY_BONUS' | 'REGISTERED' | 'TOURNAMENT_COMPLETED' | 'MULTIPLAYER_WIN' | 'MULTIPLAYER_LOSS';
   details: Record<string, any>;
   created_at: Date;
 }
@@ -702,6 +702,122 @@ export const postgresDb = {
     }
 
     return resolvedRound;
+  },
+
+  // ============================================================================
+  // LEGACY ROUND RECONCILIATION
+  // ============================================================================
+  
+  /**
+   * Get all legacy/stuck rounds that need reconciliation.
+   * These are rounds that:
+   * - Have status = 'ACTIVE'
+   * - Have expired (end_time < NOW)
+   * - Have bets (total_up > 0 OR total_down > 0)
+   * - Have onchain_round_id (linked to blockchain)
+   * 
+   * These rounds were created before the critical fix and may be orphaned.
+   */
+  async getLegacyStuckRounds(): Promise<CryptoRound[]> {
+    const result = await query<CryptoRound>(
+      `SELECT * FROM crypto_rounds 
+       WHERE status = 'ACTIVE' 
+       AND (start_time + (duration_secs * interval '1 second')) < NOW()
+       AND (total_up > 0 OR total_down > 0)
+       AND onchain_round_id IS NOT NULL
+       ORDER BY id ASC`
+    );
+    return result.rows;
+  },
+
+  /**
+   * Reconcile a single legacy round by marking it as CANCELLED with refunds.
+   * This is used when we cannot verify the on-chain resolution (orphaned round).
+   * 
+   * SAFETY: Refunds all bets to users - no user loses funds.
+   */
+  async reconcileLegacyRoundAsRefunded(roundId: number, reason: string): Promise<{
+    success: boolean;
+    refundedBets: number;
+    totalRefunded: number;
+    reason: string;
+  }> {
+    // Get the round
+    const roundResult = await query<CryptoRound>(
+      'SELECT * FROM crypto_rounds WHERE id = $1',
+      [roundId]
+    );
+    const round = roundResult.rows[0];
+    
+    if (!round) {
+      return { success: false, refundedBets: 0, totalRefunded: 0, reason: 'Round not found' };
+    }
+    
+    if (round.status !== 'ACTIVE') {
+      return { success: false, refundedBets: 0, totalRefunded: 0, reason: `Round already ${round.status}` };
+    }
+    
+    // Get all pending bets on this round
+    const betsResult = await query<Prediction>(
+      `SELECT * FROM predictions WHERE reference_id = $1 AND prediction_type = 'CRYPTO' AND status = 'PENDING'`,
+      [roundId]
+    );
+    
+    let totalRefunded = 0;
+    
+    // Refund each bet
+    for (const bet of betsResult.rows) {
+      // Refund coins to player
+      await query(
+        `UPDATE players SET coins = coins + $2 WHERE wallet_address = $1`,
+        [bet.wallet_address, bet.amount]
+      );
+      
+      // Mark prediction as CANCELLED
+      await query(
+        `UPDATE predictions SET status = 'CANCELLED', payout = 0 WHERE id = $1`,
+        [bet.id]
+      );
+      
+      totalRefunded += bet.amount;
+      
+      // Log refund activity
+      const player = await this.getPlayerByWallet(bet.wallet_address);
+      if (player) {
+        await this.logActivity(bet.wallet_address, player.username, 'PREDICTION_REFUNDED', {
+          asset: round.asset,
+          amount: bet.amount,
+          roundId: round.id,
+          reason: reason,
+        });
+      }
+      
+      console.log(`   💰 Refunded ${bet.amount} coins to ${bet.wallet_address.substring(0, 10)}...`);
+    }
+    
+    // Mark round as CANCELLED
+    await query(
+      `UPDATE crypto_rounds SET status = 'CANCELLED', winning_direction = NULL WHERE id = $1`,
+      [roundId]
+    );
+    
+    console.log(`🔄 Reconciled legacy round #${roundId} (${round.asset}): refunded ${betsResult.rows.length} bets, ${totalRefunded} coins total`);
+    
+    return {
+      success: true,
+      refundedBets: betsResult.rows.length,
+      totalRefunded,
+      reason,
+    };
+  },
+
+  /**
+   * Resolve a legacy round with a known end price (from blockchain query).
+   * This is used when we CAN verify the on-chain resolution.
+   */
+  async resolveLegacyRound(roundId: number, endPrice: number): Promise<CryptoRound | null> {
+    // Use existing resolution logic by DB ID
+    return this.resolveCryptoRound(roundId, endPrice);
   },
 
   // ============================================================================
